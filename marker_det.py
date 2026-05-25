@@ -74,6 +74,7 @@ def image_to_pdf(img, filepath, physical_width):
 
 class ReferenceDetector(ABC):
     """Base class for all pose estimation reference targets."""
+    undistorts = False
 
     def __init__(self):
         self.world_T: np.ndarray = np.eye(4, dtype=np.float64)
@@ -92,7 +93,7 @@ class ReferenceDetector(ABC):
 class ArucoDetector(ReferenceDetector):
     """Configuration for detecting single ArUco markers."""
     
-    def __init__(self, dictionary, marker_id, marker_size, filename=None):
+    def __init__(self, dictionary, marker_id, marker_size, filename=None, K=None, D=None):
         """Initialize ArUco detector for a single marker.
         
         Args:
@@ -125,7 +126,13 @@ class ArucoDetector(ReferenceDetector):
         
         # Rotation: ArUco doesn't need pose rotation (only img_pts rotation)
         self.needs_rot = False
-    
+        self.K = K
+        self.D = D
+
+    @property
+    def undistorts(self):
+        return self.K is not None and self.D is not None
+
     def detect(self, frame, drawing_frame=None):
         """Detect the specific marker in a frame.
         
@@ -136,7 +143,8 @@ class ArucoDetector(ReferenceDetector):
         Returns:
             np.ndarray or None: Marker corners (4x2) if detected, None otherwise
         """
-        corners, ids, _ = self.detector.detectMarkers(frame)
+        detect_frame = cv2.undistort(frame, self.K, self.D) if self.undistorts else frame
+        corners, ids, _ = self.detector.detectMarkers(detect_frame)
         
         if ids is None:
             return None
@@ -164,6 +172,61 @@ class ArucoDetector(ReferenceDetector):
     def get_board_dimensions(self):
         """Return (width, height) of marker in physical units."""
         return (self.marker_size, self.marker_size)
+
+
+class QRCodeDetector(ReferenceDetector):
+    """Detector for a single QR code by physical size and optional content filter."""
+
+    def __init__(self, qr_size, content=None, K=None, D=None):
+        """
+        Args:
+            qr_size: Physical edge length of the QR code in meters.
+            content: Optional decoded string to match. If None, any QR code is accepted.
+            K: Optional camera matrix for undistortion before detection.
+            D: Optional distortion coefficients for undistortion before detection.
+        """
+        super().__init__()
+        self.qr_size = qr_size
+        self.content = content
+        self.K = K
+        self.D = D
+        self.detector = cv2.QRCodeDetector()
+        self.needs_rot = False
+
+        half = qr_size / 2.0
+        self.obj_points = np.array([
+            [-half,  half, 0],  # Top-left
+            [ half,  half, 0],  # Top-right
+            [ half, -half, 0],  # Bottom-right
+            [-half, -half, 0],  # Bottom-left
+        ], dtype=np.float32)
+
+    @property
+    def undistorts(self):
+        return self.K is not None and self.D is not None
+
+    def detect(self, frame, drawing_frame=None):
+        detect_frame = cv2.undistort(frame, self.K, self.D) if self.undistorts else frame
+        data, points, _ = self.detector.detectAndDecode(detect_frame)
+
+        if points is None or not data:
+            return None
+
+        if self.content is not None and data != self.content:
+            return None
+
+        corners = points.reshape(4, 2).astype(np.float32)
+
+        if drawing_frame is not None:
+            cv2.polylines(drawing_frame, [corners.reshape(-1, 1, 2).astype(np.int32)], True, (0, 255, 0), 2)
+            cv2.putText(drawing_frame, data, tuple(corners[0].astype(int)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        return Detection(obj_pts=self.obj_points.copy(), img_pts=corners)
+
+    def get_board_dimensions(self):
+        return (self.qr_size, self.qr_size)
+
 
 class BoardDetector(ReferenceDetector):
     """Base class for board configurations."""

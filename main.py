@@ -1,9 +1,9 @@
-from sim_tools import sim, get_image, DifferentialCar
+# from sim_tools import sim, get_image, DifferentialCar
 import cv2
 import numpy as np
 import math
 import user_input as inp
-from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override
+from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter
 from marker_det import ArucoDetector
 from marker_est import PoseEstimator, PosePlotter3D
 from pb_bridge import Puzzlebot
@@ -75,7 +75,7 @@ def follow(frame, drawing_frame=None):
     Kp_w = 0.0015
     cmd = {'x': 0.0, 'w': 0.0}
     h, w = frame.shape[:2]
-    res = estimator.get_pose(frame, drawing_frame=drawing_frame)
+    res = pose_filter.update(estimator.get_pose(frame, drawing_frame=drawing_frame))
 
     def get_target_px(aim):
         ref_px = (w / 2) + (aim * (w / 2))
@@ -143,16 +143,13 @@ car = Puzzlebot(
 _f = car.K[0, 0]
 CAM_RES_X = car.img_size[0]
 
-aruco = ArucoDetector(
-    dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
-    marker_id=16,
-    marker_size=0.1
-)
+aruco = ArucoDetector( dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), marker_id=1, marker_size=0.1 )
 
 estimator = PoseEstimator(reference=aruco, K=car.K, D=car.D)
+pose_filter = PoseFilter(alpha=0.02)
 # plotter = PosePlotter3D(aruco, axis_limit=1.0, camera_at_origin=False)
 
-cmd_enables = {'x': 0.0, 'w': 1.0}
+cmd_enables = {'x': 0.0, 'w': 0.0}
 
 try:
     while True:

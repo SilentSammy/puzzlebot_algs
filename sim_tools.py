@@ -8,19 +8,19 @@ client = RemoteAPIClient('localhost', 23000)
 sim = client.getObject('sim')
 
 class DifferentialCar:
-    def __init__(self, left_wheel=None, right_wheel=None, cam_handle=None, cam_res_x=2048, cam_res_y=2048, cam_fov_deg=60.0):
+    def __init__(self, left_wheel=None, right_wheel=None, cam_handle=None, img_size=(1024, 1024), cam_fov_deg=60.0):
         # Get wheel handles from the global sim object
         self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
         self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')
         self._cam = cam_handle or sim.getObject('/visionSensor')
 
         # Camera intrinsics
-        _f = (cam_res_x / 2) / math.tan(math.radians(cam_fov_deg) / 2)
-        self.K = np.array([[_f,  0,  cam_res_x / 2],
-                           [ 0, _f,  cam_res_y / 2],
-                           [ 0,  0,              1]], dtype=np.float64)
+        _f = (img_size[0] / 2) / math.tan(math.radians(cam_fov_deg) / 2)
+        self.K = np.array([[_f,  0,  img_size[0] / 2],
+                           [ 0, _f,  img_size[1] / 2],
+                           [ 0,  0,               1]], dtype=np.float64)
         self.D = np.zeros(5, dtype=np.float64)
-        self.img_size = (cam_res_x, cam_res_y)
+        self.img_size = img_size
 
         # Differential car constants
         self.nominalLinearVelocity  = 0.12    # nominal linear speed (m/s)
@@ -157,3 +157,4 @@ def screenshot_and_exit(cam_handle):
     cv2.imwrite('last_frame.png', frame)
     cv2.waitKey(1000)
     raise SystemExit
+

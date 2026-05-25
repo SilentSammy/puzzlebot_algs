@@ -202,7 +202,8 @@ class PoseEstimator:
         img_pts[:, 0] = w - img_pts[:, 0]
         img_pts[:, 1] = h - img_pts[:, 1]
 
-        res = solve_pnp(detection.obj_pts, img_pts, self.K, self.D)
+        D = np.zeros(5, dtype=np.float64) if self.reference.undistorts else self.D
+        res = solve_pnp(detection.obj_pts, img_pts, self.K, D)
         if res is None:
             return None
 
@@ -260,6 +261,7 @@ def get_cam_T(ref_T: np.ndarray) -> np.ndarray:
     cam_T = np.linalg.inv(ref_T)
 
     return cam_T
+
 
 class PosePlotter3D:
     """Real-time 3D visualization of camera pose relative to a reference target.
