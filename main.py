@@ -16,8 +16,8 @@ def follow(frame, drawing_frame=None):
     AIM_CLAMP      = 0.75               # max aim offset fraction (0=centre, 1=edge)
     W_CLAMP        = 0.5               # max angular command magnitude
     LIN_AUTH_ANGLE = math.radians(20)  # gaze angle at which forward authority → 0
-    TARGET_DIST    = 0.125               # m — normal approach distance
-    REVERSE_DIST   = 0.5              # m — back-off distance when reversing
+    TARGET_DIST    = 0.13               # m — normal approach distance
+    REVERSE_DIST   = 0.25              # m — back-off distance when reversing
     DIST_GAIN      = 1.0 / 0.25        # full x output at 0.5 m error
     X_CLAMP        = 0.6               # max linear command magnitude
     GOAL_RADIUS    = 0.01             # m — half-side of goal square
@@ -87,7 +87,7 @@ def follow(frame, drawing_frame=None):
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 car = Puzzlebot( K=np.array([[793.9798621618975, 0.0, 628.3131432349588], [0.0, 793.3904503227144, 375.7912014522259], [0.0, 0.0, 1.0]], dtype=np.float32), D=np.array([-0.3515292796708493, 0.158025188818097, -1.861499533667287e-05, -0.00031474130783931936, -0.03843522930855781], dtype=np.float32), img_size=(1280, 720))
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), marker_id=1, marker_size=0.1)
+reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), marker_id=0, marker_size=0.1)
 
 # SETUP
 init_window('Camera', img_size=car.img_size, height=360)
