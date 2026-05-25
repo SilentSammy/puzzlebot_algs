@@ -1,0 +1,1 @@
+- Standardize img_size so we can set up the window properly.
