@@ -4,8 +4,10 @@ import user_input as inp
 from marker_est import matrix_to_vecs, vecs_to_matrix
 
 
-def init_window(name, width=640, height=360):
-    cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+def init_window(name, width=640, height=360, img_size=None):
+    if img_size is not None:
+        width = img_size[0] * height // img_size[1]
+    cv2.namedWindow(name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.resizeWindow(name, width, height)
 
 
@@ -39,50 +41,70 @@ def get_manual_override(cmd):
 class PoseFilter:
     """EMA low-pass filter for PoseEstimator.get_pose() output.
 
-    Smooths rvec and tvec independently to reduce detection jitter while
-    preserving the original (pose_T, pnp_result, detection) tuple format.
-    Returns None when no detection is available; state is retained across
-    None frames so re-acquisition converges smoothly.
+    Rotation is stored as a unit quaternion so that sign-continuity correction
+    (flipping q to -q when the new sample lands in the opposite hemisphere) is
+    always valid — q and -q represent the same rotation, unlike Rodrigues
+    vectors where -rvec is the inverse rotation.
     """
 
-    def __init__(self, alpha=0.3):
+    def __init__(self, alpha=0.3, max_jump=0.25):
         """
-        Args:
-            alpha: EMA weight on the newest sample.  0 = frozen, 1 = no
-                   smoothing (pass-through).  Typical range: 0.1 – 0.5.
+        alpha: EMA weight on newest sample (0=frozen, 1=no smoothing).
+        max_jump: Max tvec displacement (metres) allowed between samples.
+                  Samples exceeding this are discarded. None to disable.
         """
         self.alpha = alpha
-        self._rvec: np.ndarray | None = None
+        self.max_jump = max_jump
+        self._quat: np.ndarray | None = None  # unit quaternion [x, y, z, w]
         self._tvec: np.ndarray | None = None
+        self._reject_count = 0
+
+    @staticmethod
+    def _rvec_to_quat(rvec):
+        angle = np.linalg.norm(rvec)
+        if angle < 1e-10:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        half = angle * 0.5
+        axis = rvec / angle
+        return np.array([*(axis * np.sin(half)), np.cos(half)])
+
+    @staticmethod
+    def _quat_to_rvec(q):
+        q = q / np.linalg.norm(q)
+        if q[3] < 0:      # canonical form: w >= 0
+            q = -q
+        w = float(np.clip(q[3], -1.0, 1.0))
+        angle = 2.0 * np.arccos(w)
+        if angle < 1e-10:
+            return np.zeros(3)
+        return (q[:3] / np.sin(angle * 0.5)) * angle
 
     def update(self, result):
-        """Apply EMA smoothing to a get_pose() result.
-
-        Args:
-            result: Output of PoseEstimator.get_pose() —
-                    (pose_T, pnp_result, detection) or None.
-
-        Returns:
-            Filtered (pose_T, pnp_result, detection), or None if result is None.
-        """
         if result is None:
             return None
         pose_T, res, detection = result
         rvec, tvec = matrix_to_vecs(pose_T)
         if self._tvec is None:
-            self._rvec = rvec.copy()
+            self._quat = self._rvec_to_quat(rvec)
             self._tvec = tvec.copy()
         else:
-            # Rodrigues vectors that represent the same rotation can have opposite
-            # signs (axis flipped, angle negated).  Negate before blending so the
-            # EMA stays on the correct side and doesn't interpolate through zero.
-            if np.dot(rvec, self._rvec) < 0:
-                rvec = -rvec
-            self._rvec = self.alpha * rvec + (1 - self.alpha) * self._rvec
-            self._tvec = self.alpha * tvec + (1 - self.alpha) * self._tvec
-        return vecs_to_matrix(self._rvec, self._tvec), res, detection
+            if self.max_jump is not None and np.linalg.norm(tvec - self._tvec) > self.max_jump:
+                self._reject_count += 1
+                if self._reject_count >= 5:  # filter too far behind — snap to current measurement
+                    self._quat = self._rvec_to_quat(rvec)
+                    self._tvec = tvec.copy()
+                    self._reject_count = 0
+                return vecs_to_matrix(self._quat_to_rvec(self._quat), self._tvec), res, detection
+            self._reject_count = 0
+            q = self._rvec_to_quat(rvec)
+            if np.dot(q, self._quat) < 0:  # shortest-arc: q and -q are the same rotation
+                q = -q
+            self._quat = self.alpha * q + (1.0 - self.alpha) * self._quat
+            self._quat /= np.linalg.norm(self._quat)  # renormalize after blend
+            self._tvec = self.alpha * tvec + (1.0 - self.alpha) * self._tvec
+        return vecs_to_matrix(self._quat_to_rvec(self._quat), self._tvec), res, detection
 
     def reset(self):
-        """Clear filter state (call when re-acquiring after a long marker loss)."""
-        self._rvec = None
+        self._quat = None
         self._tvec = None
+        self._reject_count = 0

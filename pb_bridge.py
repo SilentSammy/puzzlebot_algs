@@ -34,8 +34,8 @@ class Puzzlebot:
         # self.nominalLinearVelocity  = 0.5
         # self.nominalAngularVelocity = math.pi
 
-        self.nominalLinearVelocity  = 0.12    # nominal linear speed (m/s)
-        self.nominalAngularVelocity = math.pi/6    # nominal angular speed (rad/s)
+        self.nominalLinearVelocity  = 0.15    # nominal linear speed (m/s)
+        self.nominalAngularVelocity = math.pi/4    # nominal angular speed (rad/s)
         self._linear_speed  = 0.0
         self._angular_speed = 0.0
 

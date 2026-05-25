@@ -17,12 +17,12 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 estimator = PoseEstimator(reference=reference, K=car.K, D=car.D)
 plotter = PosePlotter3D(reference, axis_limit=1.0, camera_at_origin=False)
 
-init_window('Camera', width=car.img_size[0] * 360 // car.img_size[1], height=360)
+init_window('Camera', img_size=car.img_size, height=360)
 
 stream_enabled = True
 plotter_enabled = False
 filter_enabled = False
-pose_filter = PoseFilter(alpha=0.02)
+pose_filter = PoseFilter(alpha=0.15)
 
 try:
     while True:
@@ -45,12 +45,21 @@ try:
         ret, frame = car.get_image()
         if ret:
             drawing_frame = frame.copy() if stream_enabled else None
-            if plotter_enabled:
-                res = estimator.get_pose(frame, drawing_frame=drawing_frame)
-                if filter_enabled:
-                    res = pose_filter.update(res)
-                if res is not None:
-                    plotter.update(res[0])
+            res = estimator.get_pose(frame, drawing_frame=drawing_frame)
+            res_filtered = pose_filter.update(res) if filter_enabled else None
+            active_res = res_filtered if filter_enabled else res
+            if res is not None:
+                T_raw  = res[0]
+                T_inv  = np.linalg.inv(T_raw)
+                T_filt = res_filtered[0] if res_filtered is not None else None
+                T_filt_inv = np.linalg.inv(T_filt) if T_filt is not None else None
+                raw_x      = T_raw[0, 3]
+                raw_x_inv  = T_inv[0, 3]
+                filt_x     = T_filt[0, 3]     if T_filt     is not None else float('nan')
+                filt_x_inv = T_filt_inv[0, 3] if T_filt_inv is not None else float('nan')
+                print(f"rx={raw_x:+.3f} ri={raw_x_inv:+.3f} | fx={filt_x:+.3f} fi={filt_x_inv:+.3f} | z={T_raw[2,3]:.3f}")
+                if plotter_enabled:
+                    plotter.update(active_res[0])
             if stream_enabled:
                 cv2.imshow('Camera', drawing_frame)
         cv2.waitKey(1)
