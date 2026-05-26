@@ -207,7 +207,10 @@ class QRCodeDetector(ReferenceDetector):
 
     def detect(self, frame, drawing_frame=None):
         detect_frame = cv2.undistort(frame, self.K, self.D) if self.undistorts else frame
-        data, points, _ = self.detector.detectAndDecode(detect_frame)
+        try:
+            data, points, _ = self.detector.detectAndDecode(detect_frame)
+        except cv2.error:
+            return None
 
         if points is None or not data:
             return None
