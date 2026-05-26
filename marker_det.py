@@ -218,11 +218,149 @@ class QRCodeDetector(ReferenceDetector):
         corners = points.reshape(4, 2).astype(np.float32)
 
         if drawing_frame is not None:
-            cv2.polylines(drawing_frame, [corners.reshape(-1, 1, 2).astype(np.int32)], True, (0, 255, 0), 2)
-            cv2.putText(drawing_frame, data, tuple(corners[0].astype(int)),
+            if self.undistorts:
+                # corners are in undistorted space — re-distort for drawing on original frame
+                pts_norm = np.array([[(p[0] - self.K[0, 2]) / self.K[0, 0],
+                                      (p[1] - self.K[1, 2]) / self.K[1, 1], 1.0]
+                                     for p in corners], dtype=np.float64)
+                draw_pts, _ = cv2.projectPoints(pts_norm, np.zeros(3), np.zeros(3), self.K, self.D)
+                draw_pts = draw_pts.reshape(-1, 2).astype(np.int32)
+            else:
+                draw_pts = corners.astype(np.int32)
+            cv2.polylines(drawing_frame, [draw_pts.reshape(-1, 1, 2)], True, (0, 255, 0), 2)
+            cv2.putText(drawing_frame, data, tuple(draw_pts[0]),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         return Detection(obj_pts=self.obj_points.copy(), img_pts=corners)
+
+    def get_board_dimensions(self):
+        return (self.qr_size, self.qr_size)
+
+
+class QReaderDetector(ReferenceDetector):
+    """QR code detector using QReader (YOLOv8 + pyzbar).
+    More robust than QRCodeDetector at steep angles and difficult lighting.
+    Works on the original distorted frame — no undistortion step needed."""
+
+    undistorts = False
+
+    def __init__(self, qr_size, content=None, model_size='s', min_confidence=0.5):
+        """
+        Args:
+            qr_size:        Physical edge length of the QR code in meters.
+            content:        Optional decoded string to match (None = accept any).
+            model_size:     YOLOv8 model size: 'n', 's', 'm', or 'l'. Default 's'.
+            min_confidence: Minimum YOLO detection confidence (0–1). Default 0.5.
+        """
+        super().__init__()
+        self.qr_size = qr_size
+        self.content = content
+        from qreader import QReader
+        self._qreader = QReader(model_size=model_size, min_confidence=min_confidence)
+        self.needs_rot = False
+
+        half = qr_size / 2.0
+        # Corner order matches cv2.QRCodeDetector: TL, TR, BR, BL
+        self.obj_points = np.array([
+            [-half,  half, 0],
+            [ half,  half, 0],
+            [ half, -half, 0],
+            [-half, -half, 0],
+        ], dtype=np.float32)
+
+    def detect(self, frame, drawing_frame=None):
+        detections = self._qreader.detect(image=frame, is_bgr=True)
+        if not detections:
+            return None
+
+        for det in detections:
+            decoded = self._qreader.decode(image=frame, detection_result=det)
+            if decoded is None:
+                continue
+            if self.content is not None and decoded != self.content:
+                continue
+
+            # quad_xy: (4, 2) float32 corners in original image space — TL, TR, BR, BL
+            corners = np.array(det['quad_xy'], dtype=np.float32).reshape(4, 2)
+
+            if drawing_frame is not None:
+                draw_pts = corners.astype(np.int32)
+                cv2.polylines(drawing_frame, [draw_pts.reshape(-1, 1, 2)], True, (0, 200, 255), 2)
+                cv2.putText(drawing_frame, decoded, tuple(draw_pts[0]),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+
+            return Detection(obj_pts=self.obj_points.copy(), img_pts=corners)
+
+        return None
+
+    def get_board_dimensions(self):
+        return (self.qr_size, self.qr_size)
+
+
+class HybridQRDetector(ReferenceDetector):
+    """Fast+accurate hybrid QR detector.
+
+    Every frame:
+    - cv2.QRCodeDetector runs synchronously (fast, accurate pose).
+    - QReader runs concurrently in a BackgroundPoller thread (slow, robust detection).
+
+    If the primary succeeds its result is returned immediately.
+    If the primary fails, the most recent QReader result (from the previous
+    background cycle) is returned as a fallback.  The BackgroundPoller ensures
+    QReader never blocks the main loop regardless of how often it is called.
+    """
+
+    def __init__(self, qr_size, content=None, K=None, D=None,
+                 model_size='s', min_confidence=0.5):
+        """
+        Args:
+            qr_size:        Physical edge length of the QR code in meters.
+            content:        Optional decoded string to match (None = accept any).
+            K, D:           Camera matrix / distortion for the primary detector.
+            model_size:     QReader YOLOv8 model size ('n','s','m','l').
+            min_confidence: QReader minimum YOLO confidence (0–1).
+        """
+        super().__init__()
+        self.qr_size = qr_size
+        self._primary  = QRCodeDetector(qr_size=qr_size, content=content, K=K, D=D)
+        self._fallback = QReaderDetector(qr_size=qr_size, content=content,
+                                         model_size=model_size,
+                                         min_confidence=min_confidence)
+        from backg_poller import BackgroundPoller
+        self._poller = BackgroundPoller()
+        self.needs_rot = False
+
+    @property
+    def undistorts(self):
+        return self._primary.undistorts
+
+    def detect(self, frame, drawing_frame=None):
+        # Submit fallback detection to the background thread.
+        # The job draws into its own blank annotation frame so it never races
+        # with the main thread's drawing_frame.
+        _frame = frame.copy()
+        def _fallback_job():
+            annot = np.zeros_like(_frame)
+            detection = self._fallback.detect(_frame, drawing_frame=annot)
+            return detection, annot
+
+        # poll() submits _fallback_job and returns the (detection, annot) pair
+        # from the previous background run.
+        prev = self._poller.poll(_fallback_job)
+
+        # Run the fast primary synchronously.
+        result = self._primary.detect(frame, drawing_frame=drawing_frame)
+        if result is not None:
+            return result
+
+        # Primary failed — composite the fallback annotation and return its detection.
+        if prev is not None:
+            fallback_detection, fallback_annot = prev
+            if drawing_frame is not None:
+                self._poller.composite(drawing_frame, fallback_annot)
+            return fallback_detection
+
+        return None
 
     def get_board_dimensions(self):
         return (self.qr_size, self.qr_size)

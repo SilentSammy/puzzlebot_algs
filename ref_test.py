@@ -1,27 +1,25 @@
 import cv2
 import numpy as np
 import time
-import user_input as inp
-from pb_bridge import Puzzlebot
-from ctrl_helpers import init_window, get_diff_drive_input, PoseFilter
-from marker_det import ArucoDetector, QRCodeDetector, QReaderDetector, HybridQRDetector
+from ctrl_helpers import init_window, PoseFilter
+from backg_poller import BackgroundPoller
+from marker_det import QRCodeDetector, QReaderDetector
 from marker_est import PoseEstimator, PosePlotter3D
-# from sim_tools import DifferentialCar, sim
 
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 
-car = Puzzlebot( K=np.array([[793.9798621618975, 0.0, 628.3131432349588], [0.0, 793.3904503227144, 375.7912014522259], [0.0, 0.0, 1.0]], dtype=np.float32), D=np.array([-0.3515292796708493, 0.158025188818097, -1.861499533667287e-05, -0.00031474130783931936, -0.03843522930855781], dtype=np.float32), img_size=(1280, 720))
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), marker_id=0, marker_size=0.1)
+K=np.array([[735.09668766, 0., 308.18011975], [0., 735.62248422, 242.58646203], [0., 0., 1.]], dtype=np.float32)
+D=np.array([0.15017654, -1.34648531, 0.00405315, -0.00410719, 2.41472656], dtype=np.float32)
 
-# reference = QRCodeDetector(qr_size=0.1, K=car.K, D=car.D) # 18 Hz
-# reference = QReaderDetector(qr_size=0.1)                    # 7 Hz
-reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
+# reference = QRCodeDetector(qr_size=0.1, K=K, D=D)
+reference = QReaderDetector(qr_size=0.1)
 
-estimator = PoseEstimator(reference=reference, K=car.K, D=car.D)
-plotter = PosePlotter3D(reference, axis_limit=1.0, camera_at_origin=False)
+estimator = PoseEstimator(reference=reference, K=K, D=D)
+plotter   = PosePlotter3D(reference, axis_limit=1.0, camera_at_origin=False)
 
-init_window('Camera', img_size=car.img_size, height=360)
+cap = cv2.VideoCapture(0)
+init_window('Camera', width=640, height=360)
 
 stream_enabled = True
 plotter_enabled = False
@@ -29,21 +27,20 @@ filter_enabled = False
 pose_filter = PoseFilter(alpha=0.15)
 _t_last = time.perf_counter()
 _loop_hz = 0.0
+qr_poller = BackgroundPoller()
 
 try:
     while True:
-        cmd = get_diff_drive_input()
-        car.lin_vel  = cmd['x'] * car.nominalLinearVelocity
-        car.ang_vel = cmd['w'] * car.nominalAngularVelocity
-        car._publish()
-
-        if inp.rising_edge('v'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        if key == ord('v'):
             stream_enabled = not stream_enabled
             print(f"Stream: {'ON' if stream_enabled else 'OFF'}")
-        if inp.rising_edge('p'):
+        if key == ord('p'):
             plotter_enabled = not plotter_enabled
             print(f"Plotter: {'ON' if plotter_enabled else 'OFF'}")
-        if inp.rising_edge('f'):
+        if key == ord('f'):
             filter_enabled = not filter_enabled
             pose_filter.reset()
             print(f"Filter: {'ON' if filter_enabled else 'OFF'}")
@@ -53,10 +50,14 @@ try:
         _t_last = _t_now
         _loop_hz = 0.9 * _loop_hz + 0.1 * (1.0 / _dt) if _dt > 0 else _loop_hz
 
-        ret, frame = car.get_image()
+        ret, frame = cap.read()
         if ret:
             drawing_frame = frame.copy() if stream_enabled else None
-            res = estimator.get_pose(frame, drawing_frame=drawing_frame)
+            _frame = frame.copy()
+            res = qr_poller.poll_with_annotated(
+                _frame, drawing_frame,
+                lambda annot: estimator.get_pose(_frame, drawing_frame=annot)
+            )
             res_filtered = pose_filter.update(res) if filter_enabled else None
             active_res = res_filtered if filter_enabled else res
             if res is not None:
@@ -75,7 +76,5 @@ try:
                 cv2.imshow('Camera', drawing_frame)
         cv2.waitKey(1)
 finally:
-    car.lin_vel  = 0.0
-    car.ang_vel = 0.0
-    car._publish()
+    cap.release()
     cv2.destroyAllWindows()
