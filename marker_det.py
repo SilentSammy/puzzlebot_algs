@@ -220,6 +220,13 @@ class QRCodeDetector(ReferenceDetector):
 
         corners = points.reshape(4, 2).astype(np.float32)
 
+        # Roll so index 0 is the corner nearest the image top-left (min x+y),
+        # regardless of how the QR code is physically oriented.
+        tl_idx = int(np.argmin(corners[:, 0] + corners[:, 1]))
+        corners  = np.roll(corners, -tl_idx, axis=0)
+        # obj_pts  = np.roll(self.obj_points, -tl_idx, axis=0)
+        obj_pts = self.obj_points.copy()
+
         if drawing_frame is not None:
             if self.undistorts:
                 # corners are in undistorted space — re-distort for drawing on original frame
@@ -234,7 +241,7 @@ class QRCodeDetector(ReferenceDetector):
             cv2.putText(drawing_frame, data, tuple(draw_pts[0]),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        return Detection(obj_pts=self.obj_points.copy(), img_pts=corners)
+        return Detection(obj_pts=obj_pts.copy(), img_pts=corners)
 
     def get_board_dimensions(self):
         return (self.qr_size, self.qr_size)

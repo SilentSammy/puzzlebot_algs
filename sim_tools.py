@@ -3,12 +3,30 @@ import numpy as np
 import time
 import math
 import cv2
+import threading
 
-client = RemoteAPIClient('localhost', 23000)
-sim = client.getObject('sim')
+client = None
+sim = None
+
+def _connect(timeout=3.0):
+    global client, sim
+    def _try():
+        global client, sim
+        try:
+            client = RemoteAPIClient('localhost', 23000)
+            sim = client.getObject('sim')
+        except Exception:
+            pass
+    t = threading.Thread(target=_try, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if sim is None:
+        print(f"sim_tools: CoppeliaSim not reachable (timeout={timeout}s) — sim=None")
+
+_connect()
 
 class DifferentialCar:
-    def __init__(self, left_wheel=None, right_wheel=None, cam_handle=None, img_size=(1024, 1024), cam_fov_deg=60.0):
+    def __init__(self, left_wheel=None, right_wheel=None, cam_handle=None, img_size=(2048, 2048), cam_fov_deg=60.0):
         # Get wheel handles from the global sim object
         self.left_wheel = left_wheel or sim.getObject('/DynamicLeftJoint')
         self.right_wheel = right_wheel or sim.getObject('/DynamicRightJoint')

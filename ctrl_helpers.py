@@ -11,7 +11,7 @@ def init_window(name, width=640, height=360, img_size=None):
     cv2.resizeWindow(name, width, height)
 
 
-def get_diff_drive_input(slow=0.5, fast=1.0):
+def get_diff_drive_input(slow=0.4, fast=1.0):
     boost = inp.get_bipolar_ctrl(high_key='c', high_game='RT0')
     scale = slow + (fast - slow) * boost
     x =  inp.get_bipolar_ctrl('w', 's', 'LY0') * scale

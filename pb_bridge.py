@@ -8,9 +8,15 @@ import cv2
 import numpy as np
 
 class Puzzlebot:
+    _DEFAULT_K = np.array([[791.28626825,   0.,         627.46998432],
+                              [  0.,         790.76386751, 376.53014032],
+                              [  0.,           0.,           1.        ]], dtype=np.float32)
+    _DEFAULT_D = np.array([-3.48434917e-01,  1.53734767e-01, -1.36492904e-04,
+                            -1.64288390e-04, -3.65786767e-02], dtype=np.float32)
+
     def __init__(self, host='192.168.137.208', port=9090, stream_port=8080, topic='/cmd_vel_safe', K=None, D=None, img_size=(1280, 720)):
-        self.K = K
-        self.D = D
+        self.K = K if K is not None else self._DEFAULT_K
+        self.D = D if D is not None else self._DEFAULT_D
         self.img_size = img_size
         self._host = host
         self._stream_port = stream_port
@@ -31,11 +37,11 @@ class Puzzlebot:
         except Exception as e:
             print(f"[Puzzlebot] WebSocket unavailable, running stream-only: {e}")
             self._ws = None
-        # self.nominalLinearVelocity  = 0.5
-        # self.nominalAngularVelocity = math.pi
+        self.nominalLinearVelocity  = 0.5
+        self.nominalAngularVelocity = math.pi
 
-        self.nominalLinearVelocity  = 0.15    # nominal linear speed (m/s)
-        self.nominalAngularVelocity = math.pi/4    # nominal angular speed (rad/s)
+        # self.nominalLinearVelocity  = 0.15    # nominal linear speed (m/s)
+        # self.nominalAngularVelocity = math.pi/4    # nominal angular speed (rad/s)
         self._linear_speed  = 0.0
         self._angular_speed = 0.0
 
@@ -99,4 +105,40 @@ class Puzzlebot:
     @ang_vel.setter
     def ang_vel(self, value):
         self._angular_speed = value
+
+
+if __name__ == "__main__":
+    import user_input as inp
+    from ctrl_helpers import init_window, get_diff_drive_input
+
+    car = Puzzlebot()
+    WINDOW = 'Puzzlebot'
+    show_camera = False
+
+    try:
+        while True:
+            if inp.rising_edge('r'):
+                show_camera = not show_camera
+                if show_camera:
+                    init_window(WINDOW, img_size=car.img_size, height=360)
+                    print("Camera feed ON")
+                else:
+                    cv2.destroyWindow(WINDOW)
+                    print("Camera feed OFF")
+
+            cmd = get_diff_drive_input()
+            car.lin_vel  = cmd['x'] * car.nominalLinearVelocity
+            car.ang_vel  = cmd['w'] * car.nominalAngularVelocity
+            car._publish()
+
+            if show_camera:
+                ret, frame = car.get_image()
+                if ret:
+                    cv2.imshow(WINDOW, frame)
+            cv2.waitKey(1)
+    finally:
+        car.lin_vel  = 0.0
+        car.ang_vel  = 0.0
+        car._publish()
+        cv2.destroyAllWindows()
 
