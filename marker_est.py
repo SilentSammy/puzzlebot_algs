@@ -227,8 +227,38 @@ class PoseEstimator:
             cv2.putText(drawing_frame, f"T: {tvec_string}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
 
         return pose_T, res, detection
-    
-    def project_point(self, pnp_result, image_point, frame_shape, z=0.0):
+
+    def reproject(self, pose_T, pnp_result, img_shape):
+        """Project the reference object points onto the image using a given pose matrix.
+
+        Mirrors the internal 180° flip so returned pixel coordinates are in the
+        original (unflipped) image space.
+
+        Args:
+            pose_T:     4×4 pose matrix (same space as returned by get_pose).
+            pnp_result: PnpResult from a previous get_pose call (supplies obj_pts).
+            img_shape:  (height, width[, ...]) of the image.
+
+        Returns:
+            pts: (N, 2) float32 array of pixel coordinates in original image space.
+        """
+        h, w = img_shape[:2]
+        obj_pts_3d = np.hstack([
+            pnp_result.obj_pts,
+            np.zeros((len(pnp_result.obj_pts), 1), dtype=np.float32)
+        ]).reshape(-1, 1, 3)
+        rvec, tvec = matrix_to_vecs(pose_T)
+        D = np.zeros(5, dtype=np.float64) if self.reference.undistorts else self.D
+        proj, _ = cv2.projectPoints(
+            obj_pts_3d,
+            rvec.astype(np.float64), tvec.astype(np.float64),
+            self.K.astype(np.float64), D.astype(np.float64)
+        )
+        pts = proj.reshape(-1, 2)
+        # Undo the 180° flip applied before solvePnP
+        pts[:, 0] = w - pts[:, 0]
+        pts[:, 1] = h - pts[:, 1]
+        return pts.astype(np.float32)
         """Project image point to reference coordinates, handling rotation if enabled.
         
         Args:
