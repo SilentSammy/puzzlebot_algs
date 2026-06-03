@@ -108,3 +108,23 @@ class PoseFilter:
         self._quat = None
         self._tvec = None
         self._reject_count = 0
+
+
+class PoseTracker:
+    """Stateful wrapper combining a PoseEstimator and a PoseFilter.
+
+    Duck-type compatible with PoseEstimator: call get_pose(frame, drawing_frame)
+    and receive a filtered (pose_T, pnp_result, detection) tuple or None.
+    """
+
+    def __init__(self, estimator, filter):
+        self._estimator = estimator
+        self._filter = filter
+
+    def get_pose(self, frame, drawing_frame=None):
+        return self._filter.update(self._estimator.get_pose(frame, drawing_frame=drawing_frame))
+
+    def reset(self):
+        self._filter.reset()
+
+

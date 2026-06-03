@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import math
 import user_input as inp
-from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter
+from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter, PoseTracker
 from marker_det import ArucoDetector, HybridQRDetector, QRCodeDetector
 from marker_est import PoseEstimator, PosePlotter3D
 from pb_bridge import Puzzlebot
@@ -31,10 +31,11 @@ def follow(frame, drawing_frame=None):
     # ------------------------
     cmd = {'x': 0.0, 'w': 0.0}
     h, w = frame.shape[:2]
-    res = pose_filter.update(estimator.get_pose(frame, drawing_frame=drawing_frame))
+    res = estimator.get_pose(frame, drawing_frame=drawing_frame)
 
-    def get_target_px(aim, base_yaw=0.0):
+    def get_target_px(aim, base_yaw=0.0, aim_clamp=1.0):
         ref_px = yaw_to_pixel(base_yaw, car.K, car.D) + (aim * (w / 2))
+        ref_px = max(w/2 - aim_clamp * w/2, min(w/2 + aim_clamp * w/2, ref_px))
         xs = res[2].img_pts[:, 0]
         marker_left_px  = xs.min()
         marker_right_px = xs.max()
@@ -71,7 +72,7 @@ def follow(frame, drawing_frame=None):
         aim = max(-AIM_CLAMP, min(AIM_CLAMP, (-1 if reverse_state else 1) * x_pos * AIM_GAIN))
 
         # Proportional control to determine angular velocity command
-        ref_px, marker_target_px = get_target_px(aim, base_yaw=target_yaw)
+        ref_px, marker_target_px = get_target_px(aim, base_yaw=target_yaw, aim_clamp=AIM_CLAMP)
         error_px = ref_px - marker_target_px
         w_cmd = max(-W_CLAMP, min(W_CLAMP, KP_W * error_px))
 
@@ -144,7 +145,7 @@ def test(frame, drawing_frame=None):
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 car = Puzzlebot()
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50), marker_id=0, marker_size=0.1)
+reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
 
 # reference = QRCodeDetector(qr_size=0.1, K=car.K, D=car.D)
 # reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
@@ -153,8 +154,10 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 # SETUP
 init_window('Camera', img_size=car.img_size, height=360)
 _f = car.K[0, 0]
-estimator = PoseEstimator(reference=reference, K=car.K, D=car.D)
-pose_filter = PoseFilter(alpha=0.05)
+estimator = PoseTracker(
+    estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
+    filter=PoseFilter(alpha=0.05)
+)
 
 cmd_enables = {'x': 0.0, 'w': 0.0}
 try:
@@ -173,8 +176,8 @@ try:
 
         # Send velocity command to car
         auto_cmd = {"x": 0.0, "w": 0.0}
-        # auto_cmd = follow(frame, drawing_frame=drawing_frame)  # get automatic command based on vision
-        follow(frame, drawing_frame=drawing_frame)  # draw only — output unused
+        auto_cmd = follow(frame, drawing_frame=drawing_frame)  # get automatic command based on vision
+        # follow(frame, drawing_frame=drawing_frame)  # draw only — output unused
         # test(frame, drawing_frame=drawing_frame)
         auto_cmd = {axis: auto_cmd[axis] * cmd_enables[axis] for axis in auto_cmd}  # apply enables
         man_cmd = get_diff_drive_input()  # get manual input
