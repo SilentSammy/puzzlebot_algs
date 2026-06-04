@@ -17,12 +17,6 @@ fused_tracker = FusedPoseTracker(
 
 init_window('Camera', img_size=car.img_size, height=360)
 
-def car_to_cam_pose(odom):
-    """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame.
-    car.x=fwd->cam.z, car.y=left->cam.x (negated to match camera convention)."""
-    ox, oy, theta = odom
-    return (-oy, -ox, theta)
-
 np.set_printoptions(precision=4, suppress=True, sign='+')
 
 try:
@@ -36,9 +30,7 @@ try:
         drawing_frame = frame.copy() if ret else None
 
         raw_odom = car.estimated_pose
-        odom_cam = car_to_cam_pose(raw_odom) if raw_odom is not None else None
-
-        result = fused_tracker.update(frame if ret else None, odom_cam, drawing_frame=drawing_frame)
+        result = fused_tracker.update(frame if ret else None, raw_odom, drawing_frame=drawing_frame)
 
         # Print pose info
         cam_str   = "CAM:   x= ---  z= ---  b=  ---deg"
@@ -47,8 +39,8 @@ try:
         if fused_tracker.cam_pose is not None:
             cx, cz, cb = fused_tracker.cam_pose
             cam_str = f"CAM:   x={cx:+.3f} z={cz:.3f} b={math.degrees(cb):+.1f}deg"
-        if odom_cam is not None:
-            ox, oz, ob = odom_cam
+        if fused_tracker.odom_pose is not None:
+            ox, oz, ob = fused_tracker.odom_pose
             odom_str = f"ODOM:  x={ox:+.3f} z={oz:.3f} b={math.degrees(ob):+.1f}deg"
         if fused_tracker.fused_pose is not None:
             fx, fz, fb = fused_tracker.fused_pose

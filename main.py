@@ -11,11 +11,6 @@ from pb_bridge import Puzzlebot
 reverse_state = False
 goal_state    = False
 
-def car_to_cam_pose(odom):
-    """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame."""
-    ox, oy, theta = odom
-    return (-oy, -ox, theta)
-
 def follow(result, frame, drawing_frame=None):
     global reverse_state, goal_state
     # --- Tuning constants ---
@@ -161,8 +156,7 @@ try:
         # Send velocity command to car
         auto_cmd = {"x": 0.0, "w": 0.0}
         raw_odom = car.estimated_pose
-        odom_cam = car_to_cam_pose(raw_odom) if raw_odom is not None else None
-        result = fused_tracker.update(frame, odom_cam, drawing_frame=drawing_frame)
+        result = fused_tracker.update(frame, raw_odom, drawing_frame=drawing_frame)
         auto_cmd = follow(result, frame, drawing_frame=drawing_frame)  # get automatic command based on vision
         # follow(result, frame, drawing_frame=drawing_frame)  # draw only — output unused
         # test(frame, drawing_frame=drawing_frame)

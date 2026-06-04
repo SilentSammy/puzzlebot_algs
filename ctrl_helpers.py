@@ -197,7 +197,8 @@ class FusedPoseTracker:
         self._last_pnp_result = None
         self._last_detection  = None
         self._cam_pose        = None   # (x_pos, z_dist, beta) from last detection
-        self._offset_pose     = None   # (dx, dz, dbeta) = cam_pose - odom_cam
+        self._odom_pose       = None   # (x_pos, z_dist, beta) latest odometry in cam space
+        self._offset_pose     = None   # (dx, dz, dbeta) = cam_pose - odom_pose
         self._fused_pose      = None   # (x_pos, z_dist, beta) last computed fused pose
 
     # ------------------------------------------------------------------
@@ -215,6 +216,11 @@ class FusedPoseTracker:
         return self._fused_pose
 
     @property
+    def odom_pose(self):
+        """Latest odometry converted to camera space (x_pos, z_dist, beta), or None."""
+        return self._odom_pose
+
+    @property
     def detection(self):
         """The detection object from the most recent marker detection, or None."""
         return self._last_detection
@@ -223,7 +229,16 @@ class FusedPoseTracker:
     # Core update
     # ------------------------------------------------------------------
 
-    def update(self, frame, odom_cam, drawing_frame=None):
+    @staticmethod
+    def _car_to_cam_pose(odom):
+        """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame.
+        car.x=fwd→cam.z, car.y=left→cam.x (negated to match camera convention)."""
+        ox, oy, theta = odom
+        return (-oy, -ox, theta)
+
+    def update(self, frame, odom, drawing_frame=None):
+        odom_cam = self._car_to_cam_pose(odom) if odom is not None else None
+        self._odom_pose = odom_cam
         # --- Camera (PnP) ---
         cam_pose = None
         detected = False
@@ -275,6 +290,7 @@ class FusedPoseTracker:
         self._last_pnp_result = None
         self._last_detection  = None
         self._cam_pose        = None
+        self._odom_pose       = None
         self._offset_pose     = None
         self._fused_pose      = None
 
