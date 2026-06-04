@@ -34,14 +34,17 @@ def decompose_pose(pose_T):
     beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
     return x_pos, z_dist, beta
 
-def car_to_cam_pose(odom_pose):
-    odom_pose = car.estimated_pose
-    odom_pose = (-odom_pose[1], odom_pose[0], odom_pose[2]) if odom_pose is not None else None  # swap x/y to match cam frame
-    return odom_pose
+def car_to_cam_pose(odom):
+    """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame.
+    car.x=fwd→cam.z, car.y=left→cam.x (negated to match camera convention)."""
+    ox, oy, theta = odom
+    return (-oy, -ox, theta)
 
 np.set_printoptions(precision=4, suppress=True, sign='+')
 
 last_cam_pose = None
+last_cam_T = None
+offset_pose = None  # (dx, dz, dbeta): added to odom_pose to match cam_pose
 try:
     while True:
         cmd = get_diff_drive_input()
@@ -59,22 +62,44 @@ try:
             if res is not None:
                 cam_T, _, _ = res
                 cam_pose = decompose_pose(cam_T)
+                last_cam_T = cam_T
                 last_cam_pose = cam_pose
 
         # Get car pose from odometry (if available)
-        odom_pose = car.estimated_pose
-        odom_pose = car_to_cam_pose(odom_pose) if odom_pose is not None else None
-        
+        raw_odom = car.estimated_pose
+        odom_pose = car_to_cam_pose(raw_odom) if raw_odom is not None else None
+
+        # Update offset whenever both sources are available
+        if cam_pose is not None and odom_pose is not None:
+            offset_pose = (
+                cam_pose[0] - odom_pose[0],
+                cam_pose[1] - odom_pose[1],
+                cam_pose[2] - odom_pose[2],
+            )
+
+        # Fused pose: odom + frozen offset
+        fused_pose = None
+        if offset_pose is not None and odom_pose is not None:
+            fused_pose = (
+                odom_pose[0] + offset_pose[0],
+                odom_pose[1] + offset_pose[1],
+                odom_pose[2] + offset_pose[2],
+            )
+
         # Print pose info
-        cam_str =  "CAM:  x= ---  z= ---  β=  ---°"
-        odom_str =  "ODOM: x= ---  z= ---  β=  ---°"
+        cam_str   =  "CAM:   x= ---  z= ---  β=  ---°"
+        odom_str  =  "ODOM:  x= ---  z= ---  β=  ---°"
+        fused_str =  "FUSED: x= ---  z= ---  β=  ---°"
         if cam_pose is not None:
             cam_x, cam_z, cam_beta = cam_pose
-            cam_str = f"CAM:  x={cam_x:+.3f} z={cam_z:.3f} β={math.degrees(cam_beta):+.1f}°"
+            cam_str = f"CAM:   x={cam_x:+.3f} z={cam_z:.3f} β={math.degrees(cam_beta):+.1f}°"
         if odom_pose is not None:
             odom_x, odom_z, odom_beta = odom_pose
-            odom_str = f"ODOM: x={odom_x:+.3f} z={odom_z:.3f} β={math.degrees(odom_beta):+.1f}°"
-        print(f"{cam_str} | {odom_str}")
+            odom_str = f"ODOM:  x={odom_x:+.3f} z={odom_z:.3f} β={math.degrees(odom_beta):+.1f}°"
+        if fused_pose is not None:
+            fx, fz, fb = fused_pose
+            fused_str = f"FUSED: x={fx:+.3f} z={fz:.3f} β={math.degrees(fb):+.1f}°"
+        print(f"{cam_str} | {odom_str} | {fused_str}")
         
         cv2.waitKey(1)
 finally:
