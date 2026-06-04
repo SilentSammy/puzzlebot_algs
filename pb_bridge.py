@@ -129,23 +129,14 @@ class Puzzlebot:
 
     @property
     def estimated_pose(self):
-        """Latest estimated pose as a 4x4 homogeneous transform matrix, or None."""
+        """Latest estimated pose as (x, y, theta) in the robot's world frame, or None."""
         msg = self._pose
         if msg is None:
             return None
         p = msg['pose']['position']
         q = msg['pose']['orientation']
-        x, y, z, w = q['x'], q['y'], q['z'], q['w']
-        # Quaternion -> rotation matrix
-        R = np.array([
-            [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
-            [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
-            [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)],
-        ], dtype=np.float64)
-        T = np.eye(4, dtype=np.float64)
-        T[:3, :3] = R
-        T[:3,  3] = [p['x'], p['y'], p['z']]
-        return T
+        theta = 2.0 * math.atan2(q['z'], q['w'])
+        return (p['x'], p['y'], theta)
 
 
 if __name__ == "__main__":

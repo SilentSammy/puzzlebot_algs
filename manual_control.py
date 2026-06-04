@@ -6,7 +6,7 @@ import user_input as inp
 from pb_bridge import Puzzlebot
 from ctrl_helpers import init_window, get_diff_drive_input, PoseFilter, PoseTracker
 from marker_det import ArucoDetector, QRCodeDetector, QReaderDetector, HybridQRDetector
-from marker_est import PoseEstimator, PosePlotter3D
+from marker_est import PoseEstimator
 # from sim_tools import DifferentialCar, sim
 
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
@@ -23,7 +23,7 @@ estimator = PoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
     PoseFilter(alpha=0.05, max_jump=0.1)
 )
-plotter = PosePlotter3D(reference, axis_limit=0.5, camera_at_origin=False)
+plotter = None  # disabled
 
 init_window('Camera', img_size=car.img_size, height=360)
 
@@ -33,6 +33,18 @@ def decompose_pose(pose_T):
     z_dist = pose_T[2, 3]
     beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
     return x_pos, z_dist, beta
+
+def compose_pose(x_pos, z_dist, beta):
+    """Reconstruct a 4x4 camera-space pose matrix from (x_pos, z_dist, beta).
+    Counterpart to decompose_pose."""
+    c, s = math.cos(beta), math.sin(beta)
+    tx = (s * z_dist - x_pos) / c if abs(c) > 1e-6 else 0.0
+    return np.array([
+        [ c, 0,  s,      tx],
+        [ 0, 1,  0,       0],
+        [-s, 0,  c,  z_dist],
+        [ 0, 0,  0,       1],
+    ], dtype=np.float64)
 
 def _rot4(axis, deg):
     """4x4 rotation matrix around 'x', 'y', or 'z' by deg degrees."""
@@ -55,7 +67,7 @@ def car_to_cam_pose(T_car):
     Mapping: car.x → cam.z,  car.y → cam.x,  theta unchanged.
     """
     theta = math.atan2(T_car[1, 0], T_car[0, 0])
-    cx, cz = T_car[1, 3], T_car[0, 3]  # cam.x = car.y, cam.z = car.x
+    cx, cz = -T_car[1, 3], -T_car[0, 3]  # cam.x = -car.y, cam.z = -car.x
     c, s = math.cos(theta), math.sin(theta)
     return np.array([
         [ c,  0, -s,  cx],
@@ -64,66 +76,43 @@ def car_to_cam_pose(T_car):
         [ 0,  0,  0,   1],
     ], dtype=np.float64)
 
-stream_enabled = True
-plotter_enabled = False
-_t_last = time.perf_counter()
-_loop_hz = 0.0
-_last_cam = None         # (x_pos, z_dist, beta)
-_last_odom = None        # (ox, oz, ob)
-_cam_odom_offset = None  # 4×4: pose_T @ inv(odom_cam), frozen when camera fails
+np.set_printoptions(precision=4, suppress=True, sign='+')
 
+last_cam_pose = None
 try:
     while True:
         cmd = get_diff_drive_input()
         car.lin_vel  = cmd['x'] * car.nominalLinearVelocity
         car.ang_vel = cmd['w'] * car.nominalAngularVelocity
         car._publish()
-
-        if inp.rising_edge('v'):
-            stream_enabled = not stream_enabled
-            print(f"Stream: {'ON' if stream_enabled else 'OFF'}")
-        if inp.rising_edge('p'):
-            plotter_enabled = not plotter_enabled
-            print(f"Plotter: {'ON' if plotter_enabled else 'OFF'}")
-        _t_now = time.perf_counter()
-        _dt = _t_now - _t_last
-        _t_last = _t_now
-        _loop_hz = 0.9 * _loop_hz + 0.1 * (1.0 / _dt) if _dt > 0 else _loop_hz
-
+        
+        # Get camera pose from marker (if available)
         ret, frame = car.get_image()
-        odom_T = car.estimated_pose
-        if odom_T is not None:
-            odom_cam = car_to_cam_pose(odom_T)
-            ox = odom_cam[0, 3]
-            oz = odom_cam[2, 3]
-            ob = math.atan2(-odom_cam[2, 0], math.hypot(odom_cam[0, 0], odom_cam[1, 0]))
-            _last_odom = (ox, oz, ob)
+        cam_pose = None
         if ret:
-            drawing_frame = frame.copy() if stream_enabled else None
+            drawing_frame = frame.copy()
             res = estimator.get_pose(frame, drawing_frame=drawing_frame)
+            cv2.imshow('Camera', drawing_frame)
             if res is not None:
-                pose_T, pnp_result, _ = res
-                _last_cam = decompose_pose(pose_T)
-                if odom_T is not None:
-                    _cam_odom_offset = pose_T @ np.linalg.inv(odom_cam)
-                if drawing_frame is not None:
-                    pts = estimator._estimator.reproject(pose_T, pnp_result, drawing_frame.shape)
-                    for i, pt in enumerate(pts):
-                        color = (0, 255, 255) if i == 0 else (0, 0, 255)
-                        cv2.circle(drawing_frame, (int(pt[0]), int(pt[1])), 6, color, -1)
-                if plotter_enabled:
-                    plotter.update(pose_T)
-            if stream_enabled:
-                cv2.imshow('Camera', drawing_frame)
+                cam_T, _, _ = res
+                cam_pose = decompose_pose(cam_T)
+                last_cam_pose = cam_pose
 
-        fused_T = (_cam_odom_offset @ odom_cam
-                   if _cam_odom_offset is not None and odom_T is not None else None)
-        _last_fused = decompose_pose(fused_T) if fused_T is not None else None
-        cam_str   = (f"cam   x={_last_cam[0]:+.3f} z={_last_cam[1]:.3f} β={math.degrees(_last_cam[2]):+.1f}°"
-                     if _last_cam is not None else "cam   --")
-        fused_str = (f"  fused x={_last_fused[0]:+.3f} z={_last_fused[1]:.3f} β={math.degrees(_last_fused[2]):+.1f}°"
-                     if _last_fused is not None else "  fused --")
-        print(f"{cam_str}{fused_str}  | {_loop_hz:.1f}Hz")
+        # Get car pose from odometry (if available)
+        odom_pose = car.estimated_pose
+        odom_pose = (-odom_pose[1], odom_pose[0], odom_pose[2]) if odom_pose is not None else None  # swap x/y to match cam frame
+        
+        # Print pose info
+        cam_str =  "CAM:  x= ---  z= ---  β=  ---°"
+        odom_str =  "ODOM: x= ---  z= ---  β=  ---°"
+        if cam_pose is not None:
+            cam_x, cam_z, cam_beta = cam_pose
+            cam_str = f"CAM:  x={cam_x:+.3f} z={cam_z:.3f} β={math.degrees(cam_beta):+.1f}°"
+        if odom_pose is not None:
+            odom_x, odom_z, odom_beta = odom_pose
+            odom_str = f"ODOM: x={odom_x:+.3f} z={odom_z:.3f} β={math.degrees(odom_beta):+.1f}°"
+        print(f"{cam_str} | {odom_str}")
+        
         cv2.waitKey(1)
 finally:
     car.lin_vel  = 0.0
