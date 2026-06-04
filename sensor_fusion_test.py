@@ -34,47 +34,10 @@ def decompose_pose(pose_T):
     beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
     return x_pos, z_dist, beta
 
-def compose_pose(x_pos, z_dist, beta):
-    """Reconstruct a 4x4 camera-space pose matrix from (x_pos, z_dist, beta).
-    Counterpart to decompose_pose."""
-    c, s = math.cos(beta), math.sin(beta)
-    tx = (s * z_dist - x_pos) / c if abs(c) > 1e-6 else 0.0
-    return np.array([
-        [ c, 0,  s,      tx],
-        [ 0, 1,  0,       0],
-        [-s, 0,  c,  z_dist],
-        [ 0, 0,  0,       1],
-    ], dtype=np.float64)
-
-def _rot4(axis, deg):
-    """4x4 rotation matrix around 'x', 'y', or 'z' by deg degrees."""
-    a = math.radians(deg)
-    c, s = math.cos(a), math.sin(a)
-    T = np.eye(4)
-    if axis == 'x':
-        T[1,1], T[1,2], T[2,1], T[2,2] = c, -s, s, c
-    elif axis == 'y':
-        T[0,0], T[0,2], T[2,0], T[2,2] = c, s, -s, c
-    elif axis == 'z':
-        T[0,0], T[0,1], T[1,0], T[1,1] = c, -s, s, c
-    return T
-
-def car_to_cam_pose(T_car):
-    """Convert a car-frame SE(2) matrix (rot-z, trans-xy) to a camera-frame matrix (rot-y, trans-xz).
-
-    Car frame:    x=forward, y=left, z=up   (rotation around z)
-    Camera frame: x=left,    y=down, z=fwd  (rotation around y)
-    Mapping: car.x → cam.z,  car.y → cam.x,  theta unchanged.
-    """
-    theta = math.atan2(T_car[1, 0], T_car[0, 0])
-    cx, cz = -T_car[1, 3], -T_car[0, 3]  # cam.x = -car.y, cam.z = -car.x
-    c, s = math.cos(theta), math.sin(theta)
-    return np.array([
-        [ c,  0, -s,  cx],
-        [ 0,  1,  0,   0],
-        [ s,  0,  c,  cz],
-        [ 0,  0,  0,   1],
-    ], dtype=np.float64)
+def car_to_cam_pose(odom_pose):
+    odom_pose = car.estimated_pose
+    odom_pose = (-odom_pose[1], odom_pose[0], odom_pose[2]) if odom_pose is not None else None  # swap x/y to match cam frame
+    return odom_pose
 
 np.set_printoptions(precision=4, suppress=True, sign='+')
 
@@ -100,7 +63,7 @@ try:
 
         # Get car pose from odometry (if available)
         odom_pose = car.estimated_pose
-        odom_pose = (-odom_pose[1], odom_pose[0], odom_pose[2]) if odom_pose is not None else None  # swap x/y to match cam frame
+        odom_pose = car_to_cam_pose(odom_pose) if odom_pose is not None else None
         
         # Print pose info
         cam_str =  "CAM:  x= ---  z= ---  β=  ---°"
