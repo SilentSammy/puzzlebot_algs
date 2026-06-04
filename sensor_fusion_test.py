@@ -34,6 +34,18 @@ def decompose_pose(pose_T):
     beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
     return x_pos, z_dist, beta
 
+def update_pose(base_T, x_pos, z_dist, beta):
+    """Return a new 4x4 matrix with updated planar pose (x_pos, z_dist, beta),
+    keeping the y-row (pitch, roll, height) from base_T unchanged."""
+    T = base_T.copy()
+    c, s = math.cos(beta), math.sin(beta)
+    T[0, 0], T[0, 2] =  c,  s
+    T[2, 0], T[2, 2] = -s,  c
+    T[2, 3] = z_dist
+    # Solve tx: x_pos = inv(T)[0,3] = -(c*tx + T[1,0]*T[1,3] - s*z_dist)
+    T[0, 3] = (-x_pos - T[1, 0] * T[1, 3] + s * z_dist) / c if abs(c) > 1e-6 else 0.0
+    return T
+
 def car_to_cam_pose(odom):
     """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame.
     car.x=fwd→cam.z, car.y=left→cam.x (negated to match camera convention)."""
@@ -58,9 +70,8 @@ try:
         if ret:
             drawing_frame = frame.copy()
             res = estimator.get_pose(frame, drawing_frame=drawing_frame)
-            cv2.imshow('Camera', drawing_frame)
             if res is not None:
-                cam_T, _, _ = res
+                cam_T, pnp_result, _ = res
                 cam_pose = decompose_pose(cam_T)
                 last_cam_T = cam_T
                 last_cam_pose = cam_pose
@@ -71,20 +82,12 @@ try:
 
         # Update offset whenever both sources are available
         if cam_pose is not None and odom_pose is not None:
-            offset_pose = (
-                cam_pose[0] - odom_pose[0],
-                cam_pose[1] - odom_pose[1],
-                cam_pose[2] - odom_pose[2],
-            )
+            offset_pose = ( cam_pose[0] - odom_pose[0], cam_pose[1] - odom_pose[1], cam_pose[2] - odom_pose[2], )
 
         # Fused pose: odom + frozen offset
         fused_pose = None
         if offset_pose is not None and odom_pose is not None:
-            fused_pose = (
-                odom_pose[0] + offset_pose[0],
-                odom_pose[1] + offset_pose[1],
-                odom_pose[2] + offset_pose[2],
-            )
+            fused_pose = ( odom_pose[0] + offset_pose[0], odom_pose[1] + offset_pose[1], odom_pose[2] + offset_pose[2], )
 
         # Print pose info
         cam_str   =  "CAM:   x= ---  z= ---  β=  ---°"
@@ -101,6 +104,14 @@ try:
             fused_str = f"FUSED: x={fx:+.3f} z={fz:.3f} β={math.degrees(fb):+.1f}°"
         print(f"{cam_str} | {odom_str} | {fused_str}")
         
+        if ret:
+            pts = estimator._estimator.reproject(cam_T, pnp_result, drawing_frame.shape)
+            for i, pt in enumerate(pts):
+                if not (math.isfinite(pt[0]) and math.isfinite(pt[1])):
+                    continue
+                color = (0, 255, 255) if i == 0 else (0, 0, 255)
+                cv2.circle(drawing_frame, (int(pt[0]), int(pt[1])), 6, color, -1)
+            cv2.imshow('Camera', drawing_frame)
         cv2.waitKey(1)
 finally:
     car.lin_vel  = 0.0

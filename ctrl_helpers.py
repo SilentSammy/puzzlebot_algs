@@ -81,6 +81,7 @@ class PoseFilter:
 
     def update(self, result):
         if result is None:
+            self.reset()
             return None
         pose_T, res, detection = result
         rvec, tvec = matrix_to_vecs(pose_T)

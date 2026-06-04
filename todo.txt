@@ -1,1 +1,2 @@
-- Standardize img_size so we can set up the window properly.
++ Standardize img_size so we can set up the window properly.
+- If estimator misses a detection, filter should reset
