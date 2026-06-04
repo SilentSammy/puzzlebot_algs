@@ -1,7 +1,35 @@
 import cv2
+import math
 import numpy as np
 import user_input as inp
 from marker_est import matrix_to_vecs, vecs_to_matrix
+
+
+def decompose_pose(pose_T):
+    """Extract (x_pos, z_dist, beta) from a 4x4 camera-space pose matrix.
+    beta is in (-90°, +90°); pair with update_pose for a lossless round-trip."""
+    x_pos = np.linalg.inv(pose_T)[0, 3]
+    z_dist = pose_T[2, 3]
+    beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
+    return x_pos, z_dist, beta
+
+
+def update_pose(base_T, x_pos, z_dist, beta):
+    """Return a new 4x4 matrix with updated planar pose (x_pos, z_dist, beta),
+    keeping the y-row (pitch, roll, height) from base_T unchanged.
+    Corrects the cos-sign ambiguity introduced by decompose_pose using hypot."""
+    T = base_T.copy()
+    c, s = math.cos(beta), math.sin(beta)
+    # decompose_pose uses hypot (always positive), so beta is in (-90°, +90°).
+    # When the true rotation has cos < 0, flip c to match base_T's sign.
+    if base_T[0, 0] * c < 0:
+        c = -c
+    T[0, 0], T[0, 2] =  c,  s
+    T[2, 0], T[2, 2] = -s,  c
+    T[2, 3] = z_dist
+    # Solve tx: x_pos = inv(T)[0,3] = -(c*tx + T[1,0]*T[1,3] - s*z_dist)
+    T[0, 3] = (-x_pos - T[1, 0] * T[1, 3] + s * z_dist) / c if abs(c) > 1e-6 else 0.0
+    return T
 
 
 def init_window(name, width=640, height=360, img_size=None):
@@ -134,5 +162,121 @@ class PoseTracker:
 
     def reset(self):
         self._filter.reset()
+
+
+class FusedPoseTracker:
+    """PoseTracker extended with 2D scalar-offset odometry fusion.
+
+    When the marker is visible, the camera pose drives the estimate and the
+    scalar difference (cam − odom) is frozen as an offset.  When the marker
+    is occluded, live odometry + frozen offset provides a fallback pose.
+
+    Usage::
+
+        tracker = FusedPoseTracker(PoseEstimator(...), PoseFilter(...))
+
+        # Each tick:
+        result = tracker.update(frame_or_None, odom_cam, drawing_frame=drawing_frame)
+        if result is not None:
+            fused_T, pnp_result, detected = result
+            pts = tracker._estimator.reproject(fused_T, pnp_result, img_shape)
+
+    Parameters
+    ----------
+    frame      : BGR ndarray or None (skip PnP when no image this tick)
+    odom_cam   : (cam_x, cam_z, beta) odometry already in camera space, or None
+    detected   : True when the marker was visible in this specific frame
+
+    Returns None until the first successful marker detection.
+    """
+
+    def __init__(self, estimator, filter):
+        self._estimator       = estimator
+        self._tracker         = PoseTracker(estimator, filter)
+        self._last_cam_T      = None
+        self._last_pnp_result = None
+        self._last_detection  = None
+        self._cam_pose        = None   # (x_pos, z_dist, beta) from last detection
+        self._offset_pose     = None   # (dx, dz, dbeta) = cam_pose - odom_cam
+        self._fused_pose      = None   # (x_pos, z_dist, beta) last computed fused pose
+
+    # ------------------------------------------------------------------
+    # Read-only diagnostics
+    # ------------------------------------------------------------------
+
+    @property
+    def cam_pose(self):
+        """(x_pos, z_dist, beta) from the most recent camera detection, or None."""
+        return self._cam_pose
+
+    @property
+    def fused_pose(self):
+        """(x_pos, z_dist, beta) of the most recently computed fused estimate, or None."""
+        return self._fused_pose
+
+    @property
+    def detection(self):
+        """The detection object from the most recent marker detection, or None."""
+        return self._last_detection
+
+    # ------------------------------------------------------------------
+    # Core update
+    # ------------------------------------------------------------------
+
+    def update(self, frame, odom_cam, drawing_frame=None):
+        # --- Camera (PnP) ---
+        cam_pose = None
+        detected = False
+        if frame is not None:
+            res = self._tracker.get_pose(frame, drawing_frame=drawing_frame)
+            if res is not None:
+                cam_T, pnp_result, detection = res
+                cam_pose = decompose_pose(cam_T)
+                self._last_cam_T      = cam_T
+                self._last_pnp_result = pnp_result
+                self._last_detection  = detection
+                self._cam_pose        = cam_pose
+                detected = True
+
+        # --- Freeze offset when both sources are available ---
+        if cam_pose is not None and odom_cam is not None:
+            self._offset_pose = (
+                cam_pose[0] - odom_cam[0],
+                cam_pose[1] - odom_cam[1],
+                cam_pose[2] - odom_cam[2],
+            )
+
+        # --- Fused scalar pose ---
+        if self._offset_pose is not None and odom_cam is not None:
+            self._fused_pose = (
+                odom_cam[0] + self._offset_pose[0],
+                odom_cam[1] + self._offset_pose[1],
+                odom_cam[2] + self._offset_pose[2],
+            )
+        else:
+            self._fused_pose = None
+
+        # --- Build fused 4×4 matrix ---
+        if self._last_cam_T is None or self._last_pnp_result is None:
+            return None
+
+        if self._fused_pose is not None:
+            fused_T = update_pose(self._last_cam_T, *self._fused_pose)
+        else:
+            fused_T = self._last_cam_T
+
+        return fused_T, self._last_pnp_result, detected
+
+    # ------------------------------------------------------------------
+
+    def reset(self):
+        self._tracker.reset()
+        self._last_cam_T      = None
+        self._last_pnp_result = None
+        self._last_detection  = None
+        self._cam_pose        = None
+        self._offset_pose     = None
+        self._fused_pose      = None
+
 
 

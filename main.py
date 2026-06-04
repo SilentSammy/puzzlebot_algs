@@ -3,14 +3,20 @@ import cv2
 import numpy as np
 import math
 import user_input as inp
-from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter, PoseTracker
+from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter, FusedPoseTracker
 from marker_det import ArucoDetector, HybridQRDetector, QRCodeDetector
 from marker_est import PoseEstimator, PosePlotter3D
 from pb_bridge import Puzzlebot
 
 reverse_state = False
 goal_state    = False
-def follow(frame, drawing_frame=None):
+
+def car_to_cam_pose(odom):
+    """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame."""
+    ox, oy, theta = odom
+    return (-oy, -ox, theta)
+
+def follow(result, frame, drawing_frame=None):
     global reverse_state, goal_state
     # --- Tuning constants ---
     KP_X           = 1.0                # scales distance error (m) into linear command
@@ -24,21 +30,34 @@ def follow(frame, drawing_frame=None):
     TARGET_DIST    = 0.185              # m — normal approach distance
     REVERSE_DIST   = 0.38                # m — back-off distance when reversing
 
-    X_OFFSET       = -0.05              # m — lateral offset of camera from robot center
+    # X_OFFSET       = -0.05              # m — lateral offset of camera from robot center
+    X_OFFSET       = -0.00              # m — lateral offset of camera from robot center
     GOAL_RADIUS    = 0.009               # m — half-side of goal square (entry)
     GOAL_HYSTERESIS= 0.006              # m — extra margin to stay in goal (exit)
 
     # ------------------------
     cmd = {'x': 0.0, 'w': 0.0}
+    if result is None:
+        return cmd
     h, w = frame.shape[:2]
-    res = estimator.get_pose(frame, drawing_frame=drawing_frame)
+    fused_T, pnp_result, detected = result
+
+    # Get marker x-coords in image: actual detection when visible, reprojected when occluded
+    detection = fused_tracker.detection
+    if detected and detection is not None:
+        img_pts_x = detection.img_pts[:, 0]
+    else:
+        pts = fused_tracker._estimator.reproject(fused_T, pnp_result, frame.shape)
+        valid = pts[np.isfinite(pts).all(axis=1)]
+        img_pts_x = valid[:, 0] if len(valid) > 0 else None
 
     def get_target_px(aim, base_yaw=0.0, aim_clamp=1.0):
         ref_px = yaw_to_pixel(base_yaw, car.K, car.D) + (aim * (w / 2))
         ref_px = max(w/2 - aim_clamp * w/2, min(w/2 + aim_clamp * w/2, ref_px))
-        xs = res[2].img_pts[:, 0]
-        marker_left_px  = xs.min()
-        marker_right_px = xs.max()
+        if img_pts_x is None or len(img_pts_x) == 0:
+            return ref_px, ref_px
+        marker_left_px  = img_pts_x.min()
+        marker_right_px = img_pts_x.max()
         marker_target_px = (marker_left_px + marker_right_px) / 2 + aim * (marker_right_px - marker_left_px) / 2
         if drawing_frame is not None:
             # Draw vertical lines for reference and marker position
@@ -46,12 +65,12 @@ def follow(frame, drawing_frame=None):
             cv2.line(drawing_frame, (int(marker_target_px), 0), (int(marker_target_px), h), (0, 255, 0), 2)  # Green line for marker
         return ref_px, marker_target_px
 
-    if res is not None:
-        pose_T, _, detection = res
-        x_pos   = np.linalg.inv(pose_T)[0, 3] - X_OFFSET
-        z_dist  = pose_T[2, 3]
-        bearing = math.atan2(pose_T[0, 3], pose_T[2, 3])
-        beta    = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
+    x_pos   = np.linalg.inv(fused_T)[0, 3] - X_OFFSET
+    z_dist  = fused_T[2, 3]
+    bearing = math.atan2(fused_T[0, 3], fused_T[2, 3])
+    beta    = math.atan2(-fused_T[2, 0], math.hypot(fused_T[0, 0], fused_T[1, 0]))
+
+    if True:
 
         # Base aim yaw: compensates for camera being offset from robot center
         target_yaw = math.atan2(-X_OFFSET, z_dist)
@@ -106,41 +125,6 @@ def yaw_to_pixel(yaw_rad, K, D):
     px, _ = cv2.projectPoints(ray, np.zeros(3), np.zeros(3), K.astype(np.float64), D.astype(np.float64))
     return float(px[0, 0, 0])
 
-def test(frame, drawing_frame=None):
-    K = car.K
-    D = car.D
-    X_OFFSET = -0.05            # m — lateral offset of camera from robot center
-    yaw = math.radians(30)  # example yaw angle
-
-    x_px = yaw_to_pixel(yaw, K, D)
-    h = frame.shape[0]
-    if drawing_frame is not None:
-        cv2.line(drawing_frame, (int(x_px), 0), (int(x_px), h), (0, 165, 255), 2)  # orange
-        cv2.putText(drawing_frame, f"{math.degrees(yaw):.0f}deg -> {x_px:.0f}px",
-                    (int(x_px) + 5, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-
-    h, w = frame.shape[:2]
-    res = estimator.get_pose(frame, drawing_frame=drawing_frame)
-
-    if res is not None:
-        pose_T, _, detection = res
-        x_pos   = np.linalg.inv(pose_T)[0, 3]
-        z_dist  = pose_T[2, 3]
-        bearing = math.atan2(pose_T[0, 3], pose_T[2, 3])
-        beta    = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
-
-        # Base aim: yaw that points at where the robot center is, not the camera
-        target_yaw = math.atan2(-X_OFFSET, z_dist)
-        aim_px = yaw_to_pixel(target_yaw, K, D)
-        if drawing_frame is not None:
-            cv2.line(drawing_frame, (int(aim_px), 0), (int(aim_px), h), (255, 255, 0), 2)  # cyan
-            cv2.putText(drawing_frame, f"aim {math.degrees(target_yaw):+.1f}deg",
-                        (int(aim_px) + 5, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-
-        print(f"x={x_pos:+.3f} z={z_dist:.3f} b={math.degrees(bearing):+.1f}° β={math.degrees(beta):+.1f}° aim_yaw={math.degrees(target_yaw):+.1f}°")
-    else:
-        print("No detection")
-
 # CAR SETUP
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
@@ -154,7 +138,7 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 # SETUP
 init_window('Camera', img_size=car.img_size, height=360)
 _f = car.K[0, 0]
-estimator = PoseTracker(
+fused_tracker = FusedPoseTracker(
     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
     filter=PoseFilter(alpha=0.05)
 )
@@ -176,8 +160,11 @@ try:
 
         # Send velocity command to car
         auto_cmd = {"x": 0.0, "w": 0.0}
-        auto_cmd = follow(frame, drawing_frame=drawing_frame)  # get automatic command based on vision
-        # follow(frame, drawing_frame=drawing_frame)  # draw only — output unused
+        raw_odom = car.estimated_pose
+        odom_cam = car_to_cam_pose(raw_odom) if raw_odom is not None else None
+        result = fused_tracker.update(frame, odom_cam, drawing_frame=drawing_frame)
+        auto_cmd = follow(result, frame, drawing_frame=drawing_frame)  # get automatic command based on vision
+        # follow(result, frame, drawing_frame=drawing_frame)  # draw only — output unused
         # test(frame, drawing_frame=drawing_frame)
         auto_cmd = {axis: auto_cmd[axis] * cmd_enables[axis] for axis in auto_cmd}  # apply enables
         man_cmd = get_diff_drive_input()  # get manual input
