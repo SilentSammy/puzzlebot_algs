@@ -15,17 +15,17 @@ def follow(frame, drawing_frame=None):
     # --- Tuning constants ---
     KP_X           = 1.0                # scales distance error (m) into linear command
     X_CLAMP        = 0.15               # max linear command magnitude
-    KP_W           = 0.000300           # angular P gain (cmd/px)
+    KP_W           = 0.000450           # angular P gain (cmd/px)
     W_CLAMP        = math.radians(60)   # max angular command magnitude
 
     AIM_CLAMP      = 0.75               # max aim offset fraction (0=centre, 1=edge)
     AIM_GAIN       = 10.0               # scales x_pos (m) into aim fraction
     LIN_AUTH_ANGLE = math.radians(20)   # gaze angle at which forward authority → 0
     TARGET_DIST    = 0.185              # m — normal approach distance
-    REVERSE_DIST   = 0.5                # m — back-off distance when reversing
+    REVERSE_DIST   = 0.38                # m — back-off distance when reversing
 
     X_OFFSET       = -0.05              # m — lateral offset of camera from robot center
-    GOAL_RADIUS    = 0.01               # m — half-side of goal square (entry)
+    GOAL_RADIUS    = 0.009               # m — half-side of goal square (entry)
     GOAL_HYSTERESIS= 0.006              # m — extra margin to stay in goal (exit)
 
     # ------------------------

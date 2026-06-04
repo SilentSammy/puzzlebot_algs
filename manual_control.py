@@ -21,16 +21,56 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 
 estimator = PoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
-    PoseFilter(alpha=0.15)
+    PoseFilter(alpha=0.05, max_jump=0.1)
 )
-plotter = PosePlotter3D(reference, axis_limit=1.0, camera_at_origin=False)
+plotter = PosePlotter3D(reference, axis_limit=0.5, camera_at_origin=False)
 
 init_window('Camera', img_size=car.img_size, height=360)
+
+def decompose_pose(pose_T):
+    """Extract (x_pos, z_dist, beta) from a 4x4 camera-space pose matrix."""
+    x_pos = np.linalg.inv(pose_T)[0, 3]
+    z_dist = pose_T[2, 3]
+    beta   = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
+    return x_pos, z_dist, beta
+
+def _rot4(axis, deg):
+    """4x4 rotation matrix around 'x', 'y', or 'z' by deg degrees."""
+    a = math.radians(deg)
+    c, s = math.cos(a), math.sin(a)
+    T = np.eye(4)
+    if axis == 'x':
+        T[1,1], T[1,2], T[2,1], T[2,2] = c, -s, s, c
+    elif axis == 'y':
+        T[0,0], T[0,2], T[2,0], T[2,2] = c, s, -s, c
+    elif axis == 'z':
+        T[0,0], T[0,1], T[1,0], T[1,1] = c, -s, s, c
+    return T
+
+def car_to_cam_pose(T_car):
+    """Convert a car-frame SE(2) matrix (rot-z, trans-xy) to a camera-frame matrix (rot-y, trans-xz).
+
+    Car frame:    x=forward, y=left, z=up   (rotation around z)
+    Camera frame: x=left,    y=down, z=fwd  (rotation around y)
+    Mapping: car.x → cam.z,  car.y → cam.x,  theta unchanged.
+    """
+    theta = math.atan2(T_car[1, 0], T_car[0, 0])
+    cx, cz = T_car[1, 3], T_car[0, 3]  # cam.x = car.y, cam.z = car.x
+    c, s = math.cos(theta), math.sin(theta)
+    return np.array([
+        [ c,  0, -s,  cx],
+        [ 0,  1,  0,   0],
+        [ s,  0,  c,  cz],
+        [ 0,  0,  0,   1],
+    ], dtype=np.float64)
 
 stream_enabled = True
 plotter_enabled = False
 _t_last = time.perf_counter()
 _loop_hz = 0.0
+_last_cam = None         # (x_pos, z_dist, beta)
+_last_odom = None        # (ox, oz, ob)
+_cam_odom_offset = None  # 4×4: pose_T @ inv(odom_cam), frozen when camera fails
 
 try:
     while True:
@@ -51,16 +91,21 @@ try:
         _loop_hz = 0.9 * _loop_hz + 0.1 * (1.0 / _dt) if _dt > 0 else _loop_hz
 
         ret, frame = car.get_image()
+        odom_T = car.estimated_pose
+        if odom_T is not None:
+            odom_cam = car_to_cam_pose(odom_T)
+            ox = odom_cam[0, 3]
+            oz = odom_cam[2, 3]
+            ob = math.atan2(-odom_cam[2, 0], math.hypot(odom_cam[0, 0], odom_cam[1, 0]))
+            _last_odom = (ox, oz, ob)
         if ret:
             drawing_frame = frame.copy() if stream_enabled else None
             res = estimator.get_pose(frame, drawing_frame=drawing_frame)
             if res is not None:
                 pose_T, pnp_result, _ = res
-                x_pos   = np.linalg.inv(pose_T)[0, 3]
-                z_dist  = pose_T[2, 3]
-                bearing = math.atan2(pose_T[0, 3], pose_T[2, 3])
-                beta    = math.atan2(-pose_T[2, 0], math.hypot(pose_T[0, 0], pose_T[1, 0]))
-                print(f"x={x_pos:+.3f} z={z_dist:.3f} b={math.degrees(bearing):+.1f}° β={math.degrees(beta):+.1f}° | {_loop_hz:.1f}Hz")
+                _last_cam = decompose_pose(pose_T)
+                if odom_T is not None:
+                    _cam_odom_offset = pose_T @ np.linalg.inv(odom_cam)
                 if drawing_frame is not None:
                     pts = estimator._estimator.reproject(pose_T, pnp_result, drawing_frame.shape)
                     for i, pt in enumerate(pts):
@@ -70,6 +115,15 @@ try:
                     plotter.update(pose_T)
             if stream_enabled:
                 cv2.imshow('Camera', drawing_frame)
+
+        fused_T = (_cam_odom_offset @ odom_cam
+                   if _cam_odom_offset is not None and odom_T is not None else None)
+        _last_fused = decompose_pose(fused_T) if fused_T is not None else None
+        cam_str   = (f"cam   x={_last_cam[0]:+.3f} z={_last_cam[1]:.3f} β={math.degrees(_last_cam[2]):+.1f}°"
+                     if _last_cam is not None else "cam   --")
+        fused_str = (f"  fused x={_last_fused[0]:+.3f} z={_last_fused[1]:.3f} β={math.degrees(_last_fused[2]):+.1f}°"
+                     if _last_fused is not None else "  fused --")
+        print(f"{cam_str}{fused_str}  | {_loop_hz:.1f}Hz")
         cv2.waitKey(1)
 finally:
     car.lin_vel  = 0.0
