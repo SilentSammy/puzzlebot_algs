@@ -47,17 +47,21 @@ class PoseFilter:
     vectors where -rvec is the inverse rotation.
     """
 
-    def __init__(self, alpha=0.3, max_jump=0.25):
+    def __init__(self, alpha=0.3, max_jump=0.25, miss_snap=0.15):
         """
         alpha: EMA weight on newest sample (0=frozen, 1=no smoothing).
         max_jump: Max tvec displacement (metres) allowed between samples.
                   Samples exceeding this are discarded. None to disable.
+        miss_snap: Extra alpha added per consecutive missed frame on resume.
+                   e.g. after 5 misses: alpha_eff = min(1.0, alpha + 5*miss_snap).
         """
         self.alpha = alpha
         self.max_jump = max_jump
+        self.miss_snap = miss_snap
         self._quat: np.ndarray | None = None  # unit quaternion [x, y, z, w]
         self._tvec: np.ndarray | None = None
         self._reject_count = 0
+        self._miss_count = 0
 
     @staticmethod
     def _rvec_to_quat(rvec):
@@ -81,8 +85,10 @@ class PoseFilter:
 
     def update(self, result):
         if result is None:
-            self.reset()
+            self._miss_count += 1
             return None
+        alpha_eff = min(1.0, self.alpha + self._miss_count * self.miss_snap)
+        self._miss_count = 0
         pose_T, res, detection = result
         rvec, tvec = matrix_to_vecs(pose_T)
         if self._tvec is None:
@@ -100,15 +106,16 @@ class PoseFilter:
             q = self._rvec_to_quat(rvec)
             if np.dot(q, self._quat) < 0:  # shortest-arc: q and -q are the same rotation
                 q = -q
-            self._quat = self.alpha * q + (1.0 - self.alpha) * self._quat
+            self._quat = alpha_eff * q + (1.0 - alpha_eff) * self._quat
             self._quat /= np.linalg.norm(self._quat)  # renormalize after blend
-            self._tvec = self.alpha * tvec + (1.0 - self.alpha) * self._tvec
+            self._tvec = alpha_eff * tvec + (1.0 - alpha_eff) * self._tvec
         return vecs_to_matrix(self._quat_to_rvec(self._quat), self._tvec), res, detection
 
     def reset(self):
         self._quat = None
         self._tvec = None
         self._reject_count = 0
+        self._miss_count = 0
 
 
 class PoseTracker:

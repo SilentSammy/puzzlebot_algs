@@ -165,7 +165,8 @@ if __name__ == "__main__":
 
             pose = car.estimated_pose
             if pose is not None:
-                print("pose\n", np.array2string(pose, precision=3, suppress_small=True))
+                x, y, theta = pose
+                print(f"pose: x={x:+.3f} y={y:+.3f} θ={math.degrees(theta):+.1f}°")
 
             if show_camera:
                 ret, frame = car.get_image()

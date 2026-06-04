@@ -259,6 +259,8 @@ class PoseEstimator:
         pts[:, 0] = w - pts[:, 0]
         pts[:, 1] = h - pts[:, 1]
         return pts.astype(np.float32)
+    
+    def project_point_to_board(self, pnp_result, image_point, frame_shape, z=0.0):
         """Project image point to reference coordinates, handling rotation if enabled.
         
         Args:
