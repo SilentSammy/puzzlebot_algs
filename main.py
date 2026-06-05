@@ -14,7 +14,7 @@ goal_state    = False
 def follow(result, frame, drawing_frame=None):
     global reverse_state, goal_state
     # --- Tuning constants ---
-    KP_X           = 1.0                # scales distance error (m) into linear command
+    KP_X           = 2.0                # scales distance error (m) into linear command
     X_CLAMP        = 0.15               # max linear command magnitude
     KP_W           = 0.000450           # angular P gain (cmd/px)
     W_CLAMP        = math.radians(60)   # max angular command magnitude
@@ -22,13 +22,13 @@ def follow(result, frame, drawing_frame=None):
     AIM_CLAMP      = 0.75               # max aim offset fraction (0=centre, 1=edge)
     AIM_GAIN       = 10.0               # scales x_pos (m) into aim fraction
     LIN_AUTH_ANGLE = math.radians(20)   # gaze angle at which forward authority → 0
-    TARGET_DIST    = 0.185              # m — normal approach distance
-    REVERSE_DIST   = 0.38                # m — back-off distance when reversing
+    TARGET_DIST    = 0.15              # m — normal approach distance
+    REVERSE_DIST   = 0.35                # m — back-off distance when reversing
 
     # X_OFFSET       = -0.05              # m — lateral offset of camera from robot center
     X_OFFSET       = -0.00              # m — lateral offset of camera from robot center
-    GOAL_RADIUS    = 0.009               # m — half-side of goal square (entry)
-    GOAL_HYSTERESIS= 0.006              # m — extra margin to stay in goal (exit)
+    GOAL_RADIUS    = 0.005               # m — half-side of goal square (entry)
+    GOAL_HYSTERESIS= 0.004              # m — extra margin to stay in goal (exit)
 
     # ------------------------
     cmd = {'x': 0.0, 'w': 0.0}
@@ -124,9 +124,9 @@ def yaw_to_pixel(yaw_rad, K, D):
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 car = Puzzlebot()
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
+# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.0334)
+reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
 
-# reference = QRCodeDetector(qr_size=0.1, K=car.K, D=car.D)
 # reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
 # reference = HybridQRDetector(qr_size=0.0334, K=car.K, D=car.D)
 
@@ -161,7 +161,7 @@ try:
         # follow(result, frame, drawing_frame=drawing_frame)  # draw only — output unused
         # test(frame, drawing_frame=drawing_frame)
         auto_cmd = {axis: auto_cmd[axis] * cmd_enables[axis] for axis in auto_cmd}  # apply enables
-        man_cmd = get_diff_drive_input()  # get manual input
+        man_cmd = get_diff_drive_input(0.25, 0.5)  # get manual input
         cmd = merge_proportional(man_cmd, auto_cmd)  # combine manual and auto commands
         car.lin_vel  = cmd['x'] * car.nominalLinearVelocity
         car.ang_vel = cmd['w'] * car.nominalAngularVelocity
