@@ -32,6 +32,39 @@ def update_pose(base_T, x_pos, z_dist, beta):
     return T
 
 
+def cam_to_car(cam_T, x_off=0.00, z_off=0.075):
+    """Transform cam_T into car_T via a chain of axis-flattening rotations."""
+    T = cam_T
+
+    # Rotate about x to flatten pitch to 180
+    dp = math.radians(180) + math.atan2(T[2, 1], T[2, 2])
+    cp, sp = math.cos(dp), math.sin(dp)
+    Rx = np.array([[1, 0, 0, 0],
+                   [0, cp, -sp, 0],
+                   [0, sp, cp, 0],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = Rx @ T
+
+    # Rotate about z to flatten roll to 180
+    dr = math.radians(180) - math.atan2(T[1, 0], T[0, 0])
+    cr, sr = math.cos(dr), math.sin(dr)
+    Rz = np.array([[cr, -sr, 0, 0],
+                   [sr, cr, 0, 0],
+                   [0, 0, 1, 0],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = Rz @ T
+
+    # Translate in y by the current inverse-frame y offset, plus x_off and z_off
+    ty = np.linalg.inv(T)[1, 3]
+    Tr = np.array([[1, 0, 0, x_off],
+                   [0, 1, 0, ty],
+                   [0, 0, 1, z_off],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = Tr @ T
+
+    return T
+
+
 def init_window(name, width=640, height=360, img_size=None):
     if img_size is not None:
         width = img_size[0] * height // img_size[1]

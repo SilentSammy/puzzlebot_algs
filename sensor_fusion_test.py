@@ -10,7 +10,7 @@ from marker_est import PoseEstimator
 car = Puzzlebot()
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
 reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
-reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
+# reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
 
 fused_tracker = FusedPoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
@@ -57,7 +57,7 @@ try:
                     if not (math.isfinite(pt[0]) and math.isfinite(pt[1])):
                         continue
                     color = (0, 0, 255) if i == 0 else (0, 255, 255)
-                    cv2.circle(drawing_frame, (int(pt[0]), int(pt[1])), 6, color, -1)
+                    cv2.circle(drawing_frame, (int(float(pt[0])), int(float(pt[1]))), 6, color, -1)
             cv2.imshow('Camera', drawing_frame)
         cv2.waitKey(1)
 finally:

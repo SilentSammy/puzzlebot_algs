@@ -22,7 +22,7 @@ def follow(result, frame, drawing_frame=None):
     AIM_CLAMP      = 0.75               # max aim offset fraction (0=centre, 1=edge)
     AIM_GAIN       = 10.0               # scales x_pos (m) into aim fraction
     LIN_AUTH_ANGLE = math.radians(20)   # gaze angle at which forward authority → 0
-    TARGET_DIST    = 0.15              # m — normal approach distance
+    TARGET_DIST    = 0.12              # m — normal approach distance
     REVERSE_DIST   = 0.35                # m — back-off distance when reversing
 
     # X_OFFSET       = -0.05              # m — lateral offset of camera from robot center
@@ -56,8 +56,10 @@ def follow(result, frame, drawing_frame=None):
         marker_target_px = (marker_left_px + marker_right_px) / 2 + aim * (marker_right_px - marker_left_px) / 2
         if drawing_frame is not None:
             # Draw vertical lines for reference and marker position
-            cv2.line(drawing_frame, (int(ref_px), 0), (int(ref_px), h), (255, 0, 0), 2)  # Blue line for reference
-            cv2.line(drawing_frame, (int(marker_target_px), 0), (int(marker_target_px), h), (0, 255, 0), 2)  # Green line for marker
+            ref_x = int(float(ref_px))
+            marker_x = int(float(marker_target_px))
+            cv2.line(drawing_frame, (ref_x, 0), (ref_x, h), (255, 0, 0), 2)  # Blue line for reference
+            cv2.line(drawing_frame, (marker_x, 0), (marker_x, h), (0, 255, 0), 2)  # Green line for marker
         return ref_px, marker_target_px
 
     x_pos   = np.linalg.inv(fused_T)[0, 3] - X_OFFSET
@@ -125,6 +127,7 @@ def yaw_to_pixel(yaw_rad, K, D):
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 car = Puzzlebot()
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.0334)
+reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
 reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
 
 # reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
