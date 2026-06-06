@@ -43,7 +43,7 @@ try:
         if result is not None:
             cam_T, pnp_result, detection = result
 
-            car_T = cam_to_car(cam_T)
+            car_T = cam_to_car(cam_T, x_off=0.05)
 
             pose_T = car_T if show_car else cam_T
             plotter.update(pose_T)
