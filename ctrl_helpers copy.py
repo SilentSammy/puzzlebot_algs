@@ -208,8 +208,10 @@ class FusedPoseTracker:
         self._last_pnp_result = None
         self._last_detection  = None
         self._cam_pose        = None   # (x_pos, z_dist, beta) from last detection
-        self._odom_pose       = None   # (x_pos, z_dist, beta) latest odometry in cam space
-        self._offset_pose     = None   # (dx, dz, dbeta) = cam_pose - odom_pose
+        self._odom_pose       = None   # current fused prediction (for diagnostics)
+        self._marker_world    = None   # (mx, my) estimated marker position in world frame
+        self._last_theta_det  = None   # unwrapped theta when marker was last detected
+        self._last_beta_det   = None   # beta when marker was last detected
         self._fused_pose      = None   # (x_pos, z_dist, beta) last computed fused pose
         self._odom_theta_last       = None  # last raw theta for unwrapping
         self._odom_theta_unwrapped  = 0.0   # accumulated unwrapped angle
@@ -262,6 +264,7 @@ class FusedPoseTracker:
         return (cam_x, cam_z, theta)
 
     def update(self, frame, odom, drawing_frame=None):
+        # --- Unwrap theta ---
         if odom is not None:
             ox, oy, theta = odom
             if self._odom_theta_last is not None:
@@ -270,10 +273,11 @@ class FusedPoseTracker:
             else:
                 self._odom_theta_unwrapped = theta
             self._odom_theta_last = theta
-            odom_cam = self._car_to_cam_pose((ox, oy, self._odom_theta_unwrapped))
+            theta_u = self._odom_theta_unwrapped
         else:
-            odom_cam = None
-        self._odom_pose = odom_cam
+            ox = oy = None
+            theta_u = self._odom_theta_unwrapped
+
         # --- Camera (PnP) ---
         cam_pose = None
         detected = False
@@ -288,23 +292,28 @@ class FusedPoseTracker:
                 self._cam_pose        = cam_pose
                 detected = True
 
-        # --- Freeze offset when both sources are available ---
-        if cam_pose is not None and odom_cam is not None:
-            self._offset_pose = (
-                cam_pose[0] - odom_cam[0],
-                cam_pose[1] - odom_cam[1],
-                cam_pose[2] - odom_cam[2],
-            )
+        # --- Store marker in world frame when both sources available ---
+        if cam_pose is not None and odom is not None:
+            cam_x, cam_z, beta = cam_pose
+            c, s = math.cos(theta_u), math.sin(theta_u)
+            self._marker_world   = (ox + cam_z * c - cam_x * s,
+                                    oy + cam_z * s + cam_x * c)
+            self._last_theta_det = theta_u
+            self._last_beta_det  = beta
 
-        # --- Fused scalar pose ---
-        if self._offset_pose is not None and odom_cam is not None:
-            self._fused_pose = (
-                odom_cam[0] + self._offset_pose[0],
-                odom_cam[1] + self._offset_pose[1],
-                odom_cam[2] + self._offset_pose[2],
-            )
+        # --- Reproject marker world pos into current robot frame ---
+        if self._marker_world is not None and odom is not None:
+            mx, my = self._marker_world
+            c, s = math.cos(theta_u), math.sin(theta_u)
+            dx, dy = mx - ox, my - oy
+            fused_z    =  dx * c + dy * s
+            fused_x    = -dx * s + dy * c
+            fused_beta = self._last_beta_det + (self._last_theta_det - theta_u)
+            self._fused_pose = (fused_x, fused_z, fused_beta)
         else:
             self._fused_pose = None
+
+        self._odom_pose = self._fused_pose
 
         # --- Build fused 4×4 matrix ---
         if self._last_cam_T is None or self._last_pnp_result is None:
@@ -326,10 +335,11 @@ class FusedPoseTracker:
         self._last_detection  = None
         self._cam_pose        = None
         self._odom_pose       = None
-        self._offset_pose     = None
+        self._marker_world    = None
+        self._last_theta_det  = None
+        self._last_beta_det   = None
         self._fused_pose      = None
         self._odom_theta_last       = None
         self._odom_theta_unwrapped  = 0.0
-
 
 

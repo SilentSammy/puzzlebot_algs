@@ -135,7 +135,8 @@ init_window('Camera', img_size=car.img_size, height=360)
 _f = car.K[0, 0]
 fused_tracker = FusedPoseTracker(
     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
-    filter=PoseFilter(alpha=0.05)
+    filter=PoseFilter(alpha=0.05),
+    odom_fn=lambda: car.estimated_pose
 )
 
 cmd_enables = {'x': 0.0, 'w': 0.0}
@@ -155,8 +156,7 @@ try:
 
         # Send velocity command to car
         auto_cmd = {"x": 0.0, "w": 0.0}
-        raw_odom = car.estimated_pose
-        result = fused_tracker.update(frame, raw_odom, drawing_frame=drawing_frame)
+        result = fused_tracker.get_pose(frame, drawing_frame=drawing_frame)
         auto_cmd = follow(result, frame, drawing_frame=drawing_frame)  # get automatic command based on vision
         # follow(result, frame, drawing_frame=drawing_frame)  # draw only — output unused
         # test(frame, drawing_frame=drawing_frame)

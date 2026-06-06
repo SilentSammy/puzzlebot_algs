@@ -8,11 +8,13 @@ from marker_det import ArucoDetector
 from marker_est import PoseEstimator
 
 car = Puzzlebot()
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
+# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
+reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
 
 fused_tracker = FusedPoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
-    PoseFilter(alpha=0.05, max_jump=0.1)
+    PoseFilter(alpha=0.05, max_jump=0.1),
+    odom_fn=lambda: car.estimated_pose
 )
 
 init_window('Camera', img_size=car.img_size, height=360)
@@ -29,8 +31,7 @@ try:
         ret, frame = car.get_image()
         drawing_frame = frame.copy() if ret else None
 
-        raw_odom = car.estimated_pose
-        result = fused_tracker.update(frame if ret else None, raw_odom, drawing_frame=drawing_frame)
+        result = fused_tracker.get_pose(frame if ret else None, drawing_frame=drawing_frame)
 
         # Print pose info
         cam_str   = "CAM:   x= ---  z= ---  b=  ---deg"
