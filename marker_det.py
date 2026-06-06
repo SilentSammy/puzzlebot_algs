@@ -203,10 +203,13 @@ class QRCodeDetector(ReferenceDetector):
 
     @property
     def undistorts(self):
-        return self.K is not None and self.D is not None
+        # Corners are re-mapped back to the original (distorted) image space in
+        # detect(), so the pose pipeline uses the real distortion coefficients.
+        return False
 
     def detect(self, frame, drawing_frame=None):
-        detect_frame = cv2.undistort(frame, self.K, self.D) if self.undistorts else frame
+        use_undistort = self.K is not None and self.D is not None
+        detect_frame = cv2.undistort(frame, self.K, self.D) if use_undistort else frame
         try:
             data, points, _ = self.detector.detectAndDecode(detect_frame)
         except cv2.error:
@@ -220,23 +223,24 @@ class QRCodeDetector(ReferenceDetector):
 
         corners = points.reshape(4, 2).astype(np.float32)
 
+        # QR detection ran on the undistorted frame, so corners are in undistorted
+        # space. Map them back to the original (distorted) image space so they
+        # align with the frame we draw on and so PnP can use the real distortion.
+        if use_undistort:
+            norm = np.array([[(p[0] - self.K[0, 2]) / self.K[0, 0],
+                              (p[1] - self.K[1, 2]) / self.K[1, 1], 1.0]
+                             for p in corners], dtype=np.float64)
+            redist, _ = cv2.projectPoints(norm, np.zeros(3), np.zeros(3), self.K, self.D)
+            corners = redist.reshape(4, 2).astype(np.float32)
+
         # Roll so index 0 is the corner nearest the image top-left (min x+y),
         # regardless of how the QR code is physically oriented.
         tl_idx = int(np.argmin(corners[:, 0] + corners[:, 1]))
         corners  = np.roll(corners, -tl_idx, axis=0)
-        # obj_pts  = np.roll(self.obj_points, -tl_idx, axis=0)
         obj_pts = self.obj_points.copy()
 
         if drawing_frame is not None:
-            if self.undistorts:
-                # corners are in undistorted space — re-distort for drawing on original frame
-                pts_norm = np.array([[(p[0] - self.K[0, 2]) / self.K[0, 0],
-                                      (p[1] - self.K[1, 2]) / self.K[1, 1], 1.0]
-                                     for p in corners], dtype=np.float64)
-                draw_pts, _ = cv2.projectPoints(pts_norm, np.zeros(3), np.zeros(3), self.K, self.D)
-                draw_pts = draw_pts.reshape(-1, 2).astype(np.int32)
-            else:
-                draw_pts = corners.astype(np.int32)
+            draw_pts = corners.astype(np.int32)
             cv2.polylines(drawing_frame, [draw_pts.reshape(-1, 1, 2)], True, (0, 255, 0), 2)
             cv2.putText(drawing_frame, data, tuple(draw_pts[0]),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
