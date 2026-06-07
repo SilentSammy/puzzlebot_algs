@@ -4,7 +4,8 @@ import numpy as np
 import math
 import time
 import user_input as inp
-from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter, FusedPoseTracker, PoseTracker, cam_to_car
+from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override
+from tracking import TrackedDetector, PoseFilter, PoseTracker, cam_to_car
 from marker_det import ArucoDetector, HybridQRDetector, QRCodeDetector
 from marker_est import PoseEstimator, PosePlotter3D
 from pb_bridge import Puzzlebot
@@ -151,7 +152,8 @@ def yaw_to_pixel(yaw_rad, K, D):
 car = Puzzlebot()
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.05)
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
-reference = QRCodeDetector(qr_size=0.05, K=car.K, D=car.D)
+# reference = QRCodeDetector(qr_size=0.05, K=car.K, D=car.D)
+reference = TrackedDetector(QRCodeDetector(qr_size=0.05, K=car.K, D=car.D))
 
 # reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
 # reference = HybridQRDetector(qr_size=0.0334, K=car.K, D=car.D)
