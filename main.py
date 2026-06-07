@@ -27,6 +27,8 @@ def follow(result, frame, drawing_frame=None):
     TARGET_DIST    = 0.30              # m — normal approach distance
     REVERSE_DIST   = 0.50                # m — back-off distance when reversing
     TARGET_BETA    = math.radians(-2)    # rad — desired final orientation (0 = face marker)
+    USE_UNDISTORTED = True              # True: pixel arithmetic in undistorted image space
+                                         # (narrower FOV but straight geometry)
 
     # X_OFFSET       = -0.00              # m — lateral offset of camera from robot center
     GOAL_RADIUS    = 0.005               # m — half-side of goal square (entry)
@@ -40,16 +42,28 @@ def follow(result, frame, drawing_frame=None):
     fused_T, pnp_result, detected = result
 
     # Get marker x-coords in image: actual detection when visible, reprojected when occluded
+    D_aim = np.zeros_like(car.D) if USE_UNDISTORTED else car.D
+
+    def to_undist_x(pts_xy):
+        """Map distorted (N,2) pixel coords into undistorted pixel space."""
+        p = pts_xy.reshape(-1, 1, 2).astype(np.float64)
+        u = cv2.undistortPoints(p, car.K, car.D, P=car.K)
+        return u.reshape(-1, 2)[:, 0]
+
     detection = pose_tracker.detection
     if detected and detection is not None:
-        img_pts_x = detection.img_pts[:, 0]
+        img_pts_x = (to_undist_x(detection.img_pts) if USE_UNDISTORTED
+                     else detection.img_pts[:, 0])
     else:
         pts = pose_tracker._estimator.reproject(fused_T, pnp_result, frame.shape)
         valid = pts[np.isfinite(pts).all(axis=1)]
-        img_pts_x = valid[:, 0] if len(valid) > 0 else None
+        if len(valid) > 0:
+            img_pts_x = to_undist_x(valid) if USE_UNDISTORTED else valid[:, 0]
+        else:
+            img_pts_x = None
 
     def get_target_px(aim, base_yaw=0.0, aim_clamp=1.0):
-        ref_px = yaw_to_pixel(base_yaw, car.K, car.D) + (aim * (w / 2))
+        ref_px = yaw_to_pixel(base_yaw, car.K, D_aim) + (aim * (w / 2))
         ref_px = max(w/2 - aim_clamp * w/2, min(w/2 + aim_clamp * w/2, ref_px))
         if img_pts_x is None or len(img_pts_x) == 0:
             return ref_px, ref_px
@@ -79,7 +93,7 @@ def follow(result, frame, drawing_frame=None):
         # Base aim yaw: compensates for camera being offset from robot center
         target_yaw = math.atan2(-X_OFFSET, z_dist)
         if drawing_frame is not None:
-            aim_px = yaw_to_pixel(target_yaw, car.K, car.D)
+            aim_px = yaw_to_pixel(target_yaw, car.K, D_aim)
             if math.isfinite(aim_px):
                 cv2.line(drawing_frame, (int(aim_px), 0), (int(aim_px), h), (255, 255, 0), 2)  # cyan
 
@@ -145,17 +159,17 @@ reference = QRCodeDetector(qr_size=0.05, K=car.K, D=car.D)
 # SETUP
 init_window('Camera', img_size=car.img_size, height=360)
 _f = car.K[0, 0]
-pose_tracker = FusedPoseTracker(
-    estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
-    filter=PoseFilter(alpha=0.05),
-    odom_fn=lambda: car.estimated_pose,
-    cam_x_off=-X_OFFSET,
-    cam_z_off=0.065,
-)
-# pose_tracker = PoseTracker(
+# pose_tracker = FusedPoseTracker(
 #     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
 #     filter=PoseFilter(tau=0.78),
+#     odom_fn=lambda: car.estimated_pose,
+#     cam_x_off=-X_OFFSET,
+#     cam_z_off=0.065,
 # )
+pose_tracker = PoseTracker(
+    estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
+    filter=PoseFilter(tau=0.78),
+)
 
 cmd_enables = {'x': 0.0, 'w': 0.0}
 last_time = time.perf_counter()
