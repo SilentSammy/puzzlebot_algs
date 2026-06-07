@@ -32,8 +32,12 @@ def update_pose(base_T, x_pos, z_dist, beta):
     return T
 
 
-def cam_to_car(cam_T, x_off=0.00, z_off=0.075):
-    """Transform cam_T into car_T via a chain of axis-flattening rotations."""
+def cam_to_car(cam_T, x_off=0.00, z_off=0.075, return_residual=False):
+    """Transform cam_T into car_T via a chain of axis-flattening rotations.
+
+    The transform discards three quantities (pitch tilt, roll tilt, and the
+    camera's marker-frame height). Pass return_residual=True to also receive
+    these as a (dp, dr, ty) tuple; feed it to car_to_cam for an exact inverse."""
     T = cam_T
 
     # Rotate about x to flatten pitch to 180
@@ -61,6 +65,54 @@ def cam_to_car(cam_T, x_off=0.00, z_off=0.075):
                    [0, 0, 1, z_off],
                    [0, 0, 0, 1]], dtype=np.float64)
     T = Tr @ T
+
+    if return_residual:
+        return T, (dp, dr, ty)
+    return T
+
+
+def car_to_cam(car_T, x_off=0.00, z_off=0.075, residual=None):
+    """Inverse of cam_to_car: map a car-frame pose back to the camera frame.
+
+    cam_to_car applies car_T = Tr @ Rz @ Rx @ cam_T, where Rx flattens pitch
+    (by dp), Rz flattens roll (by dr), and Tr translates by (x_off, ty, z_off).
+    The flatten amounts (dp, dr) and the y-translation (ty) are the only
+    information lost by the forward transform.
+
+    Pass residual=(dp, dr, ty) (from cam_to_car(..., return_residual=True)) to
+    undo all three steps and exactly recover the original cam_T.
+
+    Without a residual, only the fixed (x_off, z_off) camera offset can be
+    undone (ty defaults to 0, pitch/roll stay flat); the result is a
+    camera-frame pose lying in the marker plane, which is exact only when the
+    original camera already faced the marker."""
+    if residual is not None:
+        dp, dr, ty = residual
+    else:
+        dp, dr, ty = 0.0, 0.0, 0.0
+
+    # Undo the translation Tr
+    Tr = np.array([[1, 0, 0, x_off],
+                   [0, 1, 0, ty],
+                   [0, 0, 1, z_off],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = np.linalg.inv(Tr) @ car_T
+
+    # Undo the z rotation Rz (rotate by -dr)
+    cr, sr = math.cos(-dr), math.sin(-dr)
+    Rz = np.array([[cr, -sr, 0, 0],
+                   [sr, cr, 0, 0],
+                   [0, 0, 1, 0],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = Rz @ T
+
+    # Undo the x rotation Rx (rotate by -dp)
+    cp, sp = math.cos(-dp), math.sin(-dp)
+    Rx = np.array([[1, 0, 0, 0],
+                   [0, cp, -sp, 0],
+                   [0, sp, cp, 0],
+                   [0, 0, 0, 1]], dtype=np.float64)
+    T = Rx @ T
 
     return T
 
@@ -208,40 +260,58 @@ class PoseTracker:
 
 
 class FusedPoseTracker:
-    """PoseTracker extended with 2D scalar-offset odometry fusion.
+    """PoseTracker extended with odometry fusion at the centre of rotation.
 
-    When the marker is visible, the camera pose drives the estimate and the
-    scalar difference (cam − odom) is frozen as an offset.  When the marker
-    is occluded, live odometry + frozen offset provides a fallback pose.
+    The camera is mounted a fixed distance ahead of (and possibly beside) the
+    robot's centre of rotation, so the camera and the wheel odometry do not move
+    1:1 — a pure spin-in-place swings the camera through an arc while odometry
+    reports zero translation.  To fuse them consistently this tracker moves the
+    *camera* measurement back to the centre of rotation (via ``cam_to_car``)
+    before comparing it with odometry, which already lives at the centre.
+
+    When the marker is visible the centred camera pose drives the estimate and
+    the scalar difference (cam − odom) is frozen as a registration offset.  When
+    the marker is occluded, live odometry + frozen offset provides a fallback
+    pose.  The fused centre pose is finally mapped back to the camera frame (via
+    ``car_to_cam`` with the stored residual) so the returned matrix matches the
+    plain-``PoseTracker`` convention — callers still receive a camera-frame pose
+    and convert to car coordinates themselves.
 
     Usage::
 
-        tracker = FusedPoseTracker(PoseEstimator(...), PoseFilter(...))
+        tracker = FusedPoseTracker(PoseEstimator(...), PoseFilter(...),
+                                   odom_fn=lambda: car.estimated_pose)
 
         # Each tick:
-        result = tracker.update(frame_or_None, odom_cam, drawing_frame=drawing_frame)
+        result = tracker.get_pose(frame_or_None, drawing_frame=drawing_frame)
         if result is not None:
-            fused_T, pnp_result, detected = result
+            fused_T, pnp_result, detected = result   # fused_T is camera-frame
             pts = tracker._estimator.reproject(fused_T, pnp_result, img_shape)
 
     Parameters
     ----------
-    frame      : BGR ndarray or None (skip PnP when no image this tick)
-    odom_cam   : (cam_x, cam_z, beta) odometry already in camera space, or None
-    detected   : True when the marker was visible in this specific frame
+    estimator : PoseEstimator
+    filter    : PoseFilter
+    odom_fn   : callable () → (x, y, theta) or None — wheel odometry source
+    cam_x_off : lateral camera offset from the centre of rotation (m)
+    cam_z_off : forward camera offset from the centre of rotation (m)
 
     Returns None until the first successful marker detection.
     """
 
-    def __init__(self, estimator, filter, odom_fn=None):
+    def __init__(self, estimator, filter, odom_fn=None, cam_x_off=0.00, cam_z_off=0.075):
         self._estimator       = estimator
         self._tracker         = PoseTracker(estimator, filter)
         self._odom_fn         = odom_fn   # callable () → (x, y, theta) or None
+        self._cam_x_off       = cam_x_off  # lateral camera offset from rotation centre (m)
+        self._cam_z_off       = cam_z_off  # forward camera offset from rotation centre (m)
         self._last_cam_T      = None
+        self._last_car_T      = None   # last detection, centred (lever arm removed)
+        self._last_residual   = None   # (dp, dr, ty) mount residual from cam_to_car
         self._last_pnp_result = None
         self._last_detection  = None
-        self._cam_pose        = None   # (x_pos, z_dist, beta) from last detection
-        self._odom_pose       = None   # (x_pos, z_dist, beta) latest odometry in cam space
+        self._cam_pose        = None   # (x_pos, z_dist, beta) centred camera pose
+        self._odom_pose       = None   # (x_pos, z_dist, beta) latest odometry at centre
         self._offset_pose     = None   # (dx, dz, dbeta) = cam_pose - odom_pose
         self._fused_pose      = None   # (x_pos, z_dist, beta) last computed fused pose
         self._odom_theta_last       = None  # last raw theta for unwrapping
@@ -253,7 +323,8 @@ class FusedPoseTracker:
 
     @property
     def cam_pose(self):
-        """(x_pos, z_dist, beta) from the most recent camera detection, or None."""
+        """(x_pos, z_dist, beta) of the most recent camera detection, moved to the
+        centre of rotation (lever arm removed), or None."""
         return self._cam_pose
 
     @property
@@ -263,7 +334,7 @@ class FusedPoseTracker:
 
     @property
     def odom_pose(self):
-        """Latest odometry converted to camera space (x_pos, z_dist, beta), or None."""
+        """Latest odometry as a centred (x_pos, z_dist, beta) pose, or None."""
         return self._odom_pose
 
     @property
@@ -282,17 +353,19 @@ class FusedPoseTracker:
         return self.update(frame, self._odom_fn(), drawing_frame=drawing_frame)
 
     @staticmethod
-    def _car_to_cam_pose(odom):
-        """Convert (x, y, theta) car-frame odometry to (cam_x, cam_z, beta) camera-frame.
-        Projects world position onto the robot's local axes so cam_z tracks depth
-        consistently regardless of heading.
-        car forward = (cos θ, sin θ) in world → cam_z (negated: moving forward decreases depth)
-        car left    = (-sin θ, cos θ) in world → cam_x"""
+    def _odom_to_center_pose(odom):
+        """Convert (x, y, theta) car-frame odometry to a centred (x_pos, z_dist, beta)
+        pose, in the same convention as decompose_pose(cam_to_car(cam_T)).
+        Odometry already reports the robot's centre of rotation, so there is no
+        lever arm to remove here — this only projects the world position onto the
+        robot's local axes so z_dist tracks depth consistently regardless of heading.
+        car forward = (cos θ, sin θ) in world → z_dist (negated: moving forward decreases depth)
+        car left    = (-sin θ, cos θ) in world → x_pos"""
         ox, oy, theta = odom
         c, s = math.cos(theta), math.sin(theta)
-        cam_z = -(ox * c + oy * s)   # depth: projection onto forward axis, negated
-        cam_x =  ox * s - oy * c     # lateral: projection onto left axis
-        return (cam_x, cam_z, theta)
+        z_dist = -(ox * c + oy * s)   # depth: projection onto forward axis, negated
+        x_pos  =  ox * s - oy * c     # lateral: projection onto left axis
+        return (x_pos, z_dist, theta)
 
     def update(self, frame, odom, drawing_frame=None):
         if odom is not None:
@@ -303,48 +376,64 @@ class FusedPoseTracker:
             else:
                 self._odom_theta_unwrapped = theta
             self._odom_theta_last = theta
-            odom_cam = self._car_to_cam_pose((ox, oy, self._odom_theta_unwrapped))
+            odom_center = self._odom_to_center_pose((ox, oy, self._odom_theta_unwrapped))
         else:
-            odom_cam = None
-        self._odom_pose = odom_cam
-        # --- Camera (PnP) ---
+            odom_center = None
+        self._odom_pose = odom_center
+        # --- Camera (PnP), moved to the centre of rotation ---
         cam_pose = None
         detected = False
         if frame is not None:
             res = self._tracker.get_pose(frame, drawing_frame=drawing_frame)
             if res is not None:
                 cam_T, pnp_result, detection = res
-                cam_pose = decompose_pose(cam_T)
+                # Remove the camera's lever arm so the measurement lives at the
+                # centre of rotation, matching the odometry's reference point.
+                car_T, residual = cam_to_car(cam_T, x_off=self._cam_x_off,
+                                             z_off=self._cam_z_off, return_residual=True)
+                cam_pose = decompose_pose(car_T)
                 self._last_cam_T      = cam_T
+                self._last_car_T      = car_T
+                self._last_residual   = residual
                 self._last_pnp_result = pnp_result
                 self._last_detection  = detection
                 self._cam_pose        = cam_pose
                 detected = True
 
         # --- Freeze offset when both sources are available ---
-        if cam_pose is not None and odom_cam is not None:
+        if cam_pose is not None and odom_center is not None:
             self._offset_pose = (
-                cam_pose[0] - odom_cam[0],
-                cam_pose[1] - odom_cam[1],
-                cam_pose[2] - odom_cam[2],
+                cam_pose[0] - odom_center[0],
+                cam_pose[1] - odom_center[1],
+                cam_pose[2] - odom_center[2],
             )
 
-        # --- Fused scalar pose ---
-        if self._offset_pose is not None and odom_cam is not None:
+        # --- Fused scalar pose (at the centre of rotation) ---
+        if self._offset_pose is not None and odom_center is not None:
             self._fused_pose = (
-                odom_cam[0] + self._offset_pose[0],
-                odom_cam[1] + self._offset_pose[1],
-                odom_cam[2] + self._offset_pose[2],
+                odom_center[0] + self._offset_pose[0],
+                odom_center[1] + self._offset_pose[1],
+                odom_center[2] + self._offset_pose[2],
             )
         else:
             self._fused_pose = None
 
-        # --- Build fused 4×4 matrix ---
+        # --- Build fused 4×4 matrix, mapped back to the camera frame ---
         if self._last_cam_T is None or self._last_pnp_result is None:
             return None
 
-        if self._fused_pose is not None:
-            fused_T = update_pose(self._last_cam_T, *self._fused_pose)
+        if detected:
+            # Marker visible this frame: the (filtered) camera pose is ground
+            # truth, so return it directly — no planar round-trip, no loss.
+            fused_T = self._last_cam_T
+        elif self._fused_pose is not None:
+            # Occluded: dead-reckon the centred pose with odometry + frozen
+            # offset, then map back to the camera frame via the stored residual.
+            # The planar (x, z, beta) terms track odometry exactly; only the
+            # frozen out-of-plane orientation is approximated during the gap.
+            fused_car_T = update_pose(self._last_car_T, *self._fused_pose)
+            fused_T = car_to_cam(fused_car_T, x_off=self._cam_x_off,
+                                 z_off=self._cam_z_off, residual=self._last_residual)
         else:
             fused_T = self._last_cam_T
 
@@ -355,6 +444,8 @@ class FusedPoseTracker:
     def reset(self):
         self._tracker.reset()
         self._last_cam_T      = None
+        self._last_car_T      = None
+        self._last_residual   = None
         self._last_pnp_result = None
         self._last_detection  = None
         self._cam_pose        = None
@@ -363,6 +454,4 @@ class FusedPoseTracker:
         self._fused_pose      = None
         self._odom_theta_last       = None
         self._odom_theta_unwrapped  = 0.0
-
-
 

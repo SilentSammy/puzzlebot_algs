@@ -8,14 +8,17 @@ from marker_det import ArucoDetector, QRCodeDetector
 from marker_est import PoseEstimator
 
 car = Puzzlebot()
-# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.034)
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
+reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.05)
+# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
 # reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
 
 fused_tracker = FusedPoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
     PoseFilter(alpha=1.0, max_jump=0.2),
-    odom_fn=lambda: car.estimated_pose
+    odom_fn=lambda: car.estimated_pose,
+    # cam_x_off=-0.055,
+    cam_x_off=-0.0,
+    cam_z_off=0.0,
 )
 
 init_window('Camera', img_size=car.img_size, height=360)

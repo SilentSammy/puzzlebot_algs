@@ -76,7 +76,8 @@ def follow(result, frame, drawing_frame=None):
         target_yaw = math.atan2(-X_OFFSET, z_dist)
         if drawing_frame is not None:
             aim_px = yaw_to_pixel(target_yaw, car.K, car.D)
-            cv2.line(drawing_frame, (int(aim_px), 0), (int(aim_px), h), (255, 255, 0), 2)  # cyan
+            if math.isfinite(aim_px):
+                cv2.line(drawing_frame, (int(aim_px), 0), (int(aim_px), h), (255, 255, 0), 2)  # cyan
 
         # At goal: align to beta=0 in place, skip tracking computations
         goal_threshold = GOAL_RADIUS + (GOAL_HYSTERESIS if goal_state else 0.0)
