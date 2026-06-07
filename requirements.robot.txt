@@ -1,0 +1,14 @@
+# Robot (ROS 2 node) pip dependencies
+# Install with: pip install -r requirements.robot.txt
+#
+# ROS 2 packages (rclpy, cv_bridge, sensor_msgs, etc.) must be installed
+# separately via:
+#   sudo apt install ros-$ROS_DISTRO-cv-bridge ros-$ROS_DISTRO-vision-opencv
+# or:
+#   rosdep install --from-paths src --ignore-src -r -y
+
+numpy
+opencv-contrib-python      # cv2 + ArUco module
+
+# Optional — only needed if using QReaderDetector (lazy import in marker_det.py)
+# qreader

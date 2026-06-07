@@ -1,0 +1,15 @@
+# Desktop development dependencies
+# Install with: pip install -r requirements.txt
+#
+# ROS 2 packages (rclpy, cv_bridge, sensor_msgs, etc.) are NOT listed here —
+# they are installed via rosdep / apt on the robot.
+
+numpy
+opencv-contrib-python      # cv2 + ArUco module
+websocket-client           # pb_bridge.py (import websocket)
+
+# Optional — only needed if using QReaderDetector (lazy import in marker_det.py)
+# qreader
+
+# Optional — only needed if using PosePlotter3D (lazy import in marker_est.py)
+# matplotlib
