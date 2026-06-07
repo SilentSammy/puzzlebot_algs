@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 import math
+import time
 import user_input as inp
 from ctrl_helpers import init_window, get_diff_drive_input, merge_proportional, get_manual_override, PoseFilter, FusedPoseTracker, PoseTracker, cam_to_car
 from marker_det import ArucoDetector, HybridQRDetector, QRCodeDetector
@@ -11,6 +12,7 @@ from pb_bridge import Puzzlebot
 reverse_state = False
 goal_state    = False
 
+X_OFFSET       = -0.065              # m — lateral offset of camera from robot center
 def follow(result, frame, drawing_frame=None):
     global reverse_state, goal_state
     # --- Tuning constants ---
@@ -22,10 +24,10 @@ def follow(result, frame, drawing_frame=None):
     AIM_CLAMP      = 0.75               # max aim offset fraction (0=centre, 1=edge)
     AIM_GAIN       = 10.0               # scales x_pos (m) into aim fraction
     LIN_AUTH_ANGLE = math.radians(20)   # gaze angle at which forward authority → 0
-    TARGET_DIST    = 0.20              # m — normal approach distance
-    REVERSE_DIST   = 0.45                # m — back-off distance when reversing
+    TARGET_DIST    = 0.30              # m — normal approach distance
+    REVERSE_DIST   = 0.50                # m — back-off distance when reversing
+    TARGET_BETA    = math.radians(-2)    # rad — desired final orientation (0 = face marker)
 
-    X_OFFSET       = -0.06              # m — lateral offset of camera from robot center
     # X_OFFSET       = -0.00              # m — lateral offset of camera from robot center
     GOAL_RADIUS    = 0.005               # m — half-side of goal square (entry)
     GOAL_HYSTERESIS= 0.004              # m — extra margin to stay in goal (exit)
@@ -56,10 +58,12 @@ def follow(result, frame, drawing_frame=None):
         marker_target_px = (marker_left_px + marker_right_px) / 2 + aim * (marker_right_px - marker_left_px) / 2
         if drawing_frame is not None:
             # Draw vertical lines for reference and marker position
-            ref_x = int(float(ref_px))
-            marker_x = int(float(marker_target_px))
-            cv2.line(drawing_frame, (ref_x, 0), (ref_x, h), (255, 0, 0), 2)  # Blue line for reference
-            cv2.line(drawing_frame, (marker_x, 0), (marker_x, h), (0, 255, 0), 2)  # Green line for marker
+            if math.isfinite(ref_px):
+                ref_x = int(float(ref_px))
+                cv2.line(drawing_frame, (ref_x, 0), (ref_x, h), (255, 0, 0), 2)  # Blue line for reference
+            if math.isfinite(marker_target_px):
+                marker_x = int(float(marker_target_px))
+                cv2.line(drawing_frame, (marker_x, 0), (marker_x, h), (0, 255, 0), 2)  # Green line for marker
         return ref_px, marker_target_px
 
     # Transform marker pose from the camera frame into the robot/car frame.
@@ -79,12 +83,13 @@ def follow(result, frame, drawing_frame=None):
             if math.isfinite(aim_px):
                 cv2.line(drawing_frame, (int(aim_px), 0), (int(aim_px), h), (255, 255, 0), 2)  # cyan
 
-        # At goal: align to beta=0 in place, skip tracking computations
+        # At goal: align to TARGET_BETA in place, skip tracking computations
         goal_threshold = GOAL_RADIUS + (GOAL_HYSTERESIS if goal_state else 0.0)
         if not reverse_state and abs(z_dist - TARGET_DIST) < goal_threshold and abs(x_pos) < goal_threshold:
             goal_state = True
-            w_cmd = -max(-W_CLAMP, min(W_CLAMP, KP_W * math.tan(beta) * _f))
-            print(f"x={x_pos:+.3f} z={z_dist:.3f} b={math.degrees(bearing):+.1f}° β={math.degrees(beta):+.1f}° w={w_cmd:+.3f}  GOAL")
+            beta_error = beta - TARGET_BETA
+            w_cmd = -max(-W_CLAMP, min(W_CLAMP, KP_W * math.tan(beta_error) * _f))
+            print(f"x={x_pos:+.3f} z={z_dist:.3f} b={math.degrees(bearing):+.1f}° β={math.degrees(beta):+.1f}° β_err={math.degrees(beta_error):+.1f}° w={w_cmd:+.3f}  GOAL")
             return {'x': 0.0, 'w': w_cmd}
         goal_state = False
 
@@ -130,9 +135,9 @@ def yaw_to_pixel(yaw_rad, K, D):
 # car = DifferentialCar( left_wheel=sim.getObject('/Puzzlebot/DynamicLeftJoint'), right_wheel=sim.getObject('/Puzzlebot/DynamicRightJoint') )
 # reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=16, marker_size=0.1)
 car = Puzzlebot()
-# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.0334)
-reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
-# reference = QRCodeDetector(qr_size=0.0334, K=car.K, D=car.D)
+# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50), marker_id=0, marker_size=0.05)
+# reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), marker_id=0, marker_size=0.04)
+reference = QRCodeDetector(qr_size=0.05, K=car.K, D=car.D)
 
 # reference = HybridQRDetector(qr_size=0.1, K=car.K, D=car.D)
 # reference = HybridQRDetector(qr_size=0.0334, K=car.K, D=car.D)
@@ -140,23 +145,32 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 # SETUP
 init_window('Camera', img_size=car.img_size, height=360)
 _f = car.K[0, 0]
-# pose_tracker = FusedPoseTracker(
-#     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
-#     filter=PoseFilter(alpha=0.05),
-#     odom_fn=lambda: car.estimated_pose
-# )
-pose_tracker = PoseTracker(
+pose_tracker = FusedPoseTracker(
     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
     filter=PoseFilter(alpha=0.05),
+    odom_fn=lambda: car.estimated_pose,
+    cam_x_off=-X_OFFSET,
+    cam_z_off=0.065,
 )
+# pose_tracker = PoseTracker(
+#     estimator=PoseEstimator(reference=reference, K=car.K, D=car.D),
+#     filter=PoseFilter(tau=0.78),
+# )
 
 cmd_enables = {'x': 0.0, 'w': 0.0}
+last_time = time.perf_counter()
 try:
     while True:
         ret, frame = car.get_image()
         if not ret:
             continue
         drawing_frame = frame.copy()
+        
+        # Calculate FPS
+        current_time = time.perf_counter()
+        fps = 1.0 / (current_time - last_time) if (current_time - last_time) > 0 else 0.0
+        last_time = current_time
+        print(f"FPS: {fps:.1f} Hz", end='  ')
 
         if inp.rising_edge('1'):
             cmd_enables['x'] = 1.0 - cmd_enables['x']  # toggle between 0.0 and 1.0

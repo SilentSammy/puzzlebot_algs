@@ -24,7 +24,7 @@ init_window('Camera', width=640, height=360)
 stream_enabled = True
 plotter_enabled = False
 filter_enabled = False
-pose_filter = PoseFilter(alpha=0.15)
+pose_filter = PoseFilter(tau=0.25)
 _t_last = time.perf_counter()
 _loop_hz = 0.0
 qr_poller = BackgroundPoller()

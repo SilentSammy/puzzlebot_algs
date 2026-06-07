@@ -13,7 +13,7 @@ reference = ArucoDetector(dictionary=cv2.aruco.getPredefinedDictionary(cv2.aruco
 
 tracker = PoseTracker(
     PoseEstimator(reference=reference, K=car.K, D=car.D),
-    PoseFilter(alpha=0.05, max_jump=0.2),
+    PoseFilter(tau=0.78, max_jump=0.2),
 )
 
 init_window('Camera', img_size=car.img_size, height=360)

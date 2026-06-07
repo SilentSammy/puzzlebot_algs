@@ -14,7 +14,7 @@ class Puzzlebot:
     _DEFAULT_D = np.array([-3.48434917e-01,  1.53734767e-01, -1.36492904e-04,
                             -1.64288390e-04, -3.65786767e-02], dtype=np.float32)
 
-    def __init__(self, host='192.168.137.208', port=9090, stream_port=8080, topic='/cmd_vel_safe', pose_topic='/estimated_pose', K=None, D=None, img_size=(1280, 720)):
+    def __init__(self, host='192.168.137.184', port=9090, stream_port=8080, topic='/cmd_vel_safe', pose_topic='/estimated_pose', K=None, D=None, img_size=(1280, 720)):
         self.K = K if K is not None else self._DEFAULT_K
         self.D = D if D is not None else self._DEFAULT_D
         self.img_size = img_size

@@ -1,5 +1,6 @@
 import cv2
 import math
+import time
 import numpy as np
 import user_input as inp
 from marker_est import matrix_to_vecs, vecs_to_matrix
@@ -152,7 +153,20 @@ def get_manual_override(cmd):
 
 
 class PoseFilter:
-    """EMA low-pass filter for PoseEstimator.get_pose() output.
+    """Time-constant EMA low-pass filter for PoseEstimator.get_pose() output.
+
+    Smoothing is frame-rate independent: each update blends with
+    ``alpha_eff = 1 - exp(-dt/tau)``, where ``dt`` is the measured wall-clock
+    interval since the last accepted sample.  This keeps the response identical
+    whether the detector runs fast (ArUco) or slow (QR), unlike a fixed
+    per-frame alpha.
+
+    Converting from a legacy fixed alpha at rate f:  tau = -dt / ln(1 - alpha).
+    e.g. alpha=0.05 at 25 Hz (dt=0.04 s) -> tau = -0.04/ln(0.95) ~= 0.78 s.
+
+    Because ``dt`` grows during missed/occluded frames, the effective alpha
+    automatically rises toward 1 on resume, snapping to the fresh measurement
+    (this replaces the old per-miss "miss_snap" mechanism).
 
     Rotation is stored as a unit quaternion so that sign-continuity correction
     (flipping q to -q when the new sample lands in the opposite hemisphere) is
@@ -160,21 +174,19 @@ class PoseFilter:
     vectors where -rvec is the inverse rotation.
     """
 
-    def __init__(self, alpha=0.3, max_jump=0.25, miss_snap=0.15):
+    def __init__(self, tau=0.78, max_jump=0.25):
         """
-        alpha: EMA weight on newest sample (0=frozen, 1=no smoothing).
+        tau: EMA time constant in seconds (0=no smoothing, larger=smoother).
+             tau~=0.78 matches the legacy alpha=0.05 @ 25 Hz.
         max_jump: Max tvec displacement (metres) allowed between samples.
                   Samples exceeding this are discarded. None to disable.
-        miss_snap: Extra alpha added per consecutive missed frame on resume.
-                   e.g. after 5 misses: alpha_eff = min(1.0, alpha + 5*miss_snap).
         """
-        self.alpha = alpha
+        self.tau = tau
         self.max_jump = max_jump
-        self.miss_snap = miss_snap
         self._quat: np.ndarray | None = None  # unit quaternion [x, y, z, w]
         self._tvec: np.ndarray | None = None
         self._reject_count = 0
-        self._miss_count = 0
+        self._last_time: float | None = None  # perf_counter() of last accepted sample
 
     @staticmethod
     def _rvec_to_quat(rvec):
@@ -198,15 +210,14 @@ class PoseFilter:
 
     def update(self, result):
         if result is None:
-            self._miss_count += 1
             return None
-        alpha_eff = min(1.0, self.alpha + self._miss_count * self.miss_snap)
-        self._miss_count = 0
+        now = time.perf_counter()
         pose_T, res, detection = result
         rvec, tvec = matrix_to_vecs(pose_T)
         if self._tvec is None:
             self._quat = self._rvec_to_quat(rvec)
             self._tvec = tvec.copy()
+            self._last_time = now
         else:
             if self.max_jump is not None and np.linalg.norm(tvec - self._tvec) > self.max_jump:
                 self._reject_count += 1
@@ -214,21 +225,27 @@ class PoseFilter:
                     self._quat = self._rvec_to_quat(rvec)
                     self._tvec = tvec.copy()
                     self._reject_count = 0
+                    self._last_time = now
+                # leave _last_time untouched while rejecting so dt (and alpha_eff)
+                # keep growing, giving a fast catch-up once a valid sample lands
                 return vecs_to_matrix(self._quat_to_rvec(self._quat), self._tvec), res, detection
             self._reject_count = 0
+            dt = (now - self._last_time) if self._last_time is not None else 0.0
+            alpha_eff = (1.0 - math.exp(-dt / self.tau)) if self.tau > 0.0 else 1.0
             q = self._rvec_to_quat(rvec)
             if np.dot(q, self._quat) < 0:  # shortest-arc: q and -q are the same rotation
                 q = -q
             self._quat = alpha_eff * q + (1.0 - alpha_eff) * self._quat
             self._quat /= np.linalg.norm(self._quat)  # renormalize after blend
             self._tvec = alpha_eff * tvec + (1.0 - alpha_eff) * self._tvec
+            self._last_time = now
         return vecs_to_matrix(self._quat_to_rvec(self._quat), self._tvec), res, detection
 
     def reset(self):
         self._quat = None
         self._tvec = None
         self._reject_count = 0
-        self._miss_count = 0
+        self._last_time = None
 
 
 class PoseTracker:
@@ -299,7 +316,7 @@ class FusedPoseTracker:
     Returns None until the first successful marker detection.
     """
 
-    def __init__(self, estimator, filter, odom_fn=None, cam_x_off=0.00, cam_z_off=0.075):
+    def __init__(self, estimator, filter, odom_fn=None, cam_x_off=-0.055, cam_z_off=0.065):
         self._estimator       = estimator
         self._tracker         = PoseTracker(estimator, filter)
         self._odom_fn         = odom_fn   # callable () → (x, y, theta) or None
